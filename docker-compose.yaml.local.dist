@@ -1,0 +1,16 @@
+services:
+  server:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  postgres:
+    container_name: ${COMPOSE_PROJECT_NAME}.postgres
+    image: postgres:9.6
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_PASSWORD=postgres
+  adminer:
+    image: adminer
+    container_name: ${COMPOSE_PROJECT_NAME}.adminer
+    ports:
+      - "8080:8080"

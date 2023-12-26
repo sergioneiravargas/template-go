@@ -1,0 +1,15 @@
+name: template-go
+services:
+  server:
+    container_name: ${COMPOSE_PROJECT_NAME}.server
+    image: golang:1.21-alpine
+    expose:
+      - "3000" 
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    working_dir: /
+    volumes:
+      - ./dist/server:/usr/bin/server
+    command: ["server"]
