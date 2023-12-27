@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-func NewMiddleware(
+func Middleware(
 	service *Service,
 ) func(next http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -31,7 +31,6 @@ func NewMiddleware(
 					} else {
 						http.Error(w, "invalid JWT token", http.StatusUnauthorized)
 					}
-
 					return
 				}
 

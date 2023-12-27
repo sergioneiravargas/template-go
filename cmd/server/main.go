@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
-	"log/slog"
+	"fmt"
 	"net/http"
 	"os"
+	"slices"
 
 	"template-go/pkg/jwt"
 	"template-go/pkg/log"
@@ -18,6 +19,7 @@ import (
 func main() {
 	app := fx.New(
 		fx.Provide(
+			newAppConf,
 			newSQLDB,
 			newLogger,
 			newJWTService,
@@ -29,6 +31,7 @@ func main() {
 
 	app.Run()
 }
+
 func configureLifecycleHooks(
 	lc fx.Lifecycle,
 	handler http.Handler,
@@ -50,20 +53,54 @@ func configureLifecycleHooks(
 	})
 }
 
+type AppConf struct {
+	ServiceName string
+	ServiceEnv  string
+}
+
+func newAppConf() AppConf {
+	serviceName := os.Getenv("SERVICE_NAME")
+	if serviceName == "" {
+		panic("missing service name")
+	}
+
+	serviceEnv := os.Getenv("SERVICE_ENV")
+	supportedEnvs := []string{
+		"prod",
+		"dev",
+	}
+	if !slices.Contains(supportedEnvs, serviceEnv) {
+		panic(fmt.Sprintf("unsupported service environment \"%s\"", serviceEnv))
+	}
+
+	return AppConf{
+		ServiceName: serviceName,
+		ServiceEnv:  serviceEnv,
+	}
+}
+
 func newHTTPHandler(
+	appConf AppConf,
 	jwtService *jwt.Service,
+	logger *log.Logger,
 ) http.Handler {
 	r := chi.NewRouter()
 
 	// Middlewares
+	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
-	r.Use(jwt.NewMiddleware(jwtService))
+	r.Use(log.Middleware(appConf.ServiceName, appConf.ServiceEnv))
+	r.Use(jwt.Middleware(jwtService))
 
 	// Routes
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/hello-world", func(w http.ResponseWriter, r *http.Request) {
+		logger.Info("HTTP route reached", struct {
+			RoutePath string `json:"routePath"`
+		}{
+			RoutePath: "/hello-world",
+		})
+
 		w.Write([]byte("Hello, World!"))
 	})
 
@@ -79,7 +116,6 @@ func newSQLDB() *sql.DB {
 		Password: os.Getenv("DB_PASSWORD"),
 		Driver:   "pgx",
 	}
-
 	setupFunc := func(db *sql.DB) error {
 		return nil
 	}
@@ -90,11 +126,14 @@ func newSQLDB() *sql.DB {
 	)
 }
 
-func newLogger() *log.Logger {
-	handler := slog.NewJSONHandler(os.Stdout, nil)
+func newLogger(
+	appConf AppConf,
+) *log.Logger {
+	handler := log.NewHandler(os.Stdout, appConf.ServiceEnv)
 
 	return log.NewLogger(
 		handler,
+		appConf.ServiceName,
 	)
 }
 
