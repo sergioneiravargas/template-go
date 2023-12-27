@@ -56,6 +56,9 @@ func configureLifecycleHooks(
 type AppConf struct {
 	ServiceName string
 	ServiceEnv  string
+
+	SQLConf sql.Conf
+	JWTConf jwt.Conf
 }
 
 func newAppConf() AppConf {
@@ -73,9 +76,24 @@ func newAppConf() AppConf {
 		panic(fmt.Sprintf("unsupported service environment \"%s\"", serviceEnv))
 	}
 
+	sqlConf := sql.Conf{
+		Host:     os.Getenv("SQL_HOST"),
+		Port:     os.Getenv("SQL_PORT"),
+		Name:     os.Getenv("SQL_NAME"),
+		User:     os.Getenv("SQL_USER"),
+		Password: os.Getenv("SQL_PASSWORD"),
+		Driver:   "pgx",
+	}
+
+	jwtConf := jwt.Conf{
+		KeySetURL: os.Getenv("JWT_KEYSET_URL"),
+	}
+
 	return AppConf{
 		ServiceName: serviceName,
 		ServiceEnv:  serviceEnv,
+		SQLConf:     sqlConf,
+		JWTConf:     jwtConf,
 	}
 }
 
@@ -107,21 +125,15 @@ func newHTTPHandler(
 	return r
 }
 
-func newSQLDB() *sql.DB {
-	conf := sql.Conf{
-		Host:     os.Getenv("DB_HOST"),
-		Port:     os.Getenv("DB_PORT"),
-		Name:     os.Getenv("DB_NAME"),
-		User:     os.Getenv("DB_USER"),
-		Password: os.Getenv("DB_PASSWORD"),
-		Driver:   "pgx",
-	}
+func newSQLDB(
+	appConf AppConf,
+) *sql.DB {
 	setupFunc := func(db *sql.DB) error {
 		return nil
 	}
 
 	return sql.NewDB(
-		conf,
+		appConf.SQLConf,
 		setupFunc,
 	)
 }
@@ -137,10 +149,10 @@ func newLogger(
 	)
 }
 
-func newJWTService() *jwt.Service {
-	keySetURL := os.Getenv("JWKS_URL")
-
+func newJWTService(
+	appConf AppConf,
+) *jwt.Service {
 	return jwt.NewService(
-		keySetURL,
+		appConf.JWTConf,
 	)
 }

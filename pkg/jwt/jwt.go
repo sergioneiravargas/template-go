@@ -47,10 +47,14 @@ type Service struct {
 	keySet KeySet
 }
 
+type Conf struct {
+	KeySetURL string
+}
+
 func NewService(
-	keySetURL string,
+	conf Conf,
 ) *Service {
-	keySet, err := FetchKeySet(keySetURL)
+	keySet, err := FetchKeySet(conf.KeySetURL)
 	if err != nil {
 		panic(err)
 	}
