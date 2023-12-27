@@ -62,7 +62,11 @@ func NewService(
 
 func (s *Service) ValidateToken(token string) error {
 	parsedToken, err := ParseToken(token, s.keySet)
-	if err != nil || !parsedToken.Valid {
+	if err != nil {
+		return err
+	}
+
+	if !parsedToken.Valid {
 		return ErrInvalidToken
 	}
 
@@ -71,7 +75,11 @@ func (s *Service) ValidateToken(token string) error {
 
 func (s *Service) TokenClaims(token string) (MapClaims, error) {
 	parsedToken, err := ParseToken(token, s.keySet)
-	if err != nil || !parsedToken.Valid {
+	if err != nil {
+		return nil, err
+	}
+
+	if !parsedToken.Valid {
 		return nil, ErrInvalidToken
 	}
 
