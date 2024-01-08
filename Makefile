@@ -12,7 +12,7 @@ test:
 
 .PHONY: get-pkg
 get-pkg:
-	@echo 'pkg name?' && \
+	@echo 'pkg name:' && \
 	read pkg_name && \
 	docker run --rm -v ./:/code -w /code golang:1.21-alpine \
 	go mod tidy && \
@@ -32,24 +32,24 @@ down:
 
 .PHONY: restart
 restart:
-	@echo 'service name?' && \
+	@echo 'service name:' && \
 	read service_name && \
 	docker restart ${PROJECT_NAME}.$${service_name}
 
 .PHONY: exec
 exec:
-	@echo 'service name?' && \
+	@echo 'service name:' && \
 	read service_name && \
 	docker exec -it ${PROJECT_NAME}.$${service_name} ash
 
 .PHONY: logs
 logs:
-	@echo 'service name?' && \
+	@echo 'service name:' && \
 	read service_name && \
 	docker logs -f -n 50 ${PROJECT_NAME}.$${service_name}
 
 .PHONY: stats
 stats:
-	@echo 'service name?' && \
+	@echo 'service name:' && \
 	read service_name && \
 	docker stats ${PROJECT_NAME}.$${service_name}
