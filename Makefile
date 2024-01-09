@@ -1,22 +1,48 @@
 PROJECT_NAME := template-go
 
+.PHONY: setup
+setup: setup-env setup-docker build-server
+
+.PHONY: setup-env
+setup-env:
+	@> .env && \
+	echo "SERVICE_NAME=${PROJECT_NAME}" >> .env && \
+	echo 'SERVICE_ENV:' && read service_env && echo "SERVICE_ENV=$${service_env}" >> .env && \
+	echo 'SQL_USER:' && read sql_user && echo "SQL_USER=$${sql_user}" >> .env && \
+	echo 'SQL_PASSWORD:' && read sql_password && echo "SQL_PASSWORD=$${sql_password}" >> .env && \
+	echo 'SQL_HOST:' && read sql_host && echo "SQL_HOST=$${sql_host}" >> .env && \
+	echo 'SQL_PORT:' && read sql_port && echo "SQL_PORT=$${sql_port}" >> .env && \
+	echo 'SQL_NAME:' && read sql_name && echo "SQL_NAME=$${sql_name}" >> .env && \
+	echo 'JWT_KEYSET_URL:' && read jwt_keyset_url && echo "JWT_KEYSET_URL=$${jwt_keyset_url}" >> .env
+
+.PHONY: setup-docker
+setup-docker:
+	@[ -e ./docker-compose.yaml.local ] || cp ./docker-compose.yaml.local.dist ./docker-compose.yaml.local
+
 .PHONY: build-server
 build-server:
-	@docker run --rm -v ./:/code -w /code golang:1.21-alpine \
-	go mod tidy && \
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ./dist/server ./cmd/server/main.go
+	@docker run --rm -v ./:/code -w /code \
+	-e CGO_ENABLED=0 \
+	-e GOOS=linux \
+	-e GOARCH=amd64 \
+	golang:1.21-alpine \
+	go build -o ./dist/server ./cmd/server/main.go
 
 .PHONY: test
 test:
 	@docker run --rm -v ./:/code -w /code golang:1.21-alpine go test ./...
 
-.PHONY: get-pkg
-get-pkg:
+.PHONY: get
+get:
 	@echo 'pkg name:' && \
 	read pkg_name && \
 	docker run --rm -v ./:/code -w /code golang:1.21-alpine \
-	go mod tidy && \
 	go get -u $${pkg_name}
+
+.PHONY: mod-tidy
+mod-tidy:
+	@docker run --rm -v ./:/code -w /code golang:1.21-alpine \
+	go mod tidy
 
 .PHONY: loc
 loc:
