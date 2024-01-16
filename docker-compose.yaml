@@ -1,7 +1,7 @@
-name: ${SERVICE_NAME}
+name: ${APP_NAME}
 services:
   server:
-    container_name: ${SERVICE_NAME}.server
+    container_name: ${APP_NAME}.server
     image: golang:1.21-alpine
     expose:
       - "3000" 

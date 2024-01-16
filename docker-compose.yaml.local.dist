@@ -1,18 +1,15 @@
 services:
-  server:
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
   postgres:
-    container_name: ${SERVICE_NAME}.postgres
+    container_name: ${APP_NAME}.postgres
     image: postgres:16
     ports:
       - "5432:5432"
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=postgres
+      - POSTGRES_USER=${SQL_USER}
+      - POSTGRES_PASSWORD=${SQL_PASSWORD}
+      - POSTGRES_DB=${SQL_NAME}
   adminer:
     image: adminer
-    container_name: ${SERVICE_NAME}.adminer
+    container_name: ${APP_NAME}.adminer
     ports:
       - "8080:8080"

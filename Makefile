@@ -9,8 +9,8 @@ build: build-server
 .PHONY: setup-env
 setup-env:
 	@> .env && \
-	echo "SERVICE_NAME=${PROJECT_NAME}" >> .env && \
-	echo 'SERVICE_ENV:' && read service_env && echo "SERVICE_ENV=$${service_env}" >> .env && \
+	echo "APP_NAME=${PROJECT_NAME}" >> .env && \
+	echo 'APP_ENV:' && read app_env && echo "APP_ENV=$${app_env}" >> .env && \
 	echo 'SQL_USER:' && read sql_user && echo "SQL_USER=$${sql_user}" >> .env && \
 	echo 'SQL_PASSWORD:' && read sql_password && echo "SQL_PASSWORD=$${sql_password}" >> .env && \
 	echo 'SQL_HOST:' && read sql_host && echo "SQL_HOST=$${sql_host}" >> .env && \
@@ -31,21 +31,12 @@ build-server:
 	golang:1.21-alpine \
 	go build -o ./dist/server ./cmd/server/main.go
 
-.PHONY: test
-test:
-	@docker run --rm -v ./:/code -w /code golang:1.21-alpine go test ./...
-
-.PHONY: get
-get:
-	@echo 'pkg name:' && \
-	read pkg_name && \
+.PHONY: go
+go:
+	@echo 'go command:' && \
+	read go_command && \
 	docker run --rm -v ./:/code -w /code golang:1.21-alpine \
-	go get -u $${pkg_name}
-
-.PHONY: mod-tidy
-mod-tidy:
-	@docker run --rm -v ./:/code -w /code golang:1.21-alpine \
-	go mod tidy
+	go $${go_command}
 
 .PHONY: loc
 loc:
