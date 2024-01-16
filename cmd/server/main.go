@@ -54,26 +54,26 @@ func configureLifecycleHooks(
 }
 
 type AppConf struct {
-	ServiceName string
-	ServiceEnv  string
+	Name string
+	Env  string
 
 	SQLConf sql.Conf
 	JWTConf jwt.Conf
 }
 
 func newAppConf() AppConf {
-	serviceName := os.Getenv("SERVICE_NAME")
-	if serviceName == "" {
-		panic("missing service name")
+	appName := os.Getenv("APP_NAME")
+	if appName == "" {
+		panic("missing application name")
 	}
 
-	serviceEnv := os.Getenv("SERVICE_ENV")
+	appEnv := os.Getenv("APP_ENV")
 	supportedEnvs := []string{
 		"prod",
 		"dev",
 	}
-	if !slices.Contains(supportedEnvs, serviceEnv) {
-		panic(fmt.Sprintf("unsupported service environment \"%s\"", serviceEnv))
+	if !slices.Contains(supportedEnvs, appEnv) {
+		panic(fmt.Sprintf("unsupported application environment \"%s\"", appEnv))
 	}
 
 	sqlConf := sql.Conf{
@@ -90,10 +90,10 @@ func newAppConf() AppConf {
 	}
 
 	return AppConf{
-		ServiceName: serviceName,
-		ServiceEnv:  serviceEnv,
-		SQLConf:     sqlConf,
-		JWTConf:     jwtConf,
+		Name:    appName,
+		Env:     appEnv,
+		SQLConf: sqlConf,
+		JWTConf: jwtConf,
 	}
 }
 
@@ -108,7 +108,7 @@ func newHTTPHandler(
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(log.Middleware(appConf.ServiceName, appConf.ServiceEnv))
+	r.Use(log.Middleware(appConf.Name, appConf.Env))
 	r.Use(jwt.Middleware(jwtService))
 
 	// Routes
@@ -141,11 +141,11 @@ func newSQLDB(
 func newLogger(
 	appConf AppConf,
 ) *log.Logger {
-	handler := log.NewHandler(os.Stdout, appConf.ServiceEnv)
+	handler := log.NewHandler(os.Stdout, appConf.Env)
 
 	return log.NewLogger(
 		handler,
-		appConf.ServiceName,
+		appConf.Name,
 	)
 }
 
