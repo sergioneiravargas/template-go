@@ -1,7 +1,7 @@
-name: template-go
+name: ${SERVICE_NAME}
 services:
   server:
-    container_name: ${COMPOSE_PROJECT_NAME}.server
+    container_name: ${SERVICE_NAME}.server
     image: golang:1.21-alpine
     expose:
       - "3000" 
