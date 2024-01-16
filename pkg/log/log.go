@@ -8,8 +8,8 @@ import (
 )
 
 type Logger struct {
-	logger      *slog.Logger
-	serviceName string
+	producerName string
+	logger       *slog.Logger
 }
 
 type Handler = slog.Handler
@@ -17,12 +17,12 @@ type Handler = slog.Handler
 type Level = slog.Level
 
 func NewLogger(
+	producerName string,
 	handler Handler,
-	serviceName string,
 ) *Logger {
 	return &Logger{
-		logger:      slog.New(handler),
-		serviceName: serviceName,
+		producerName: producerName,
+		logger:       slog.New(handler),
 	}
 }
 
@@ -47,7 +47,7 @@ func (l *Logger) log(msg string, ctx any, lvl Level) {
 		context.TODO(),
 		lvl,
 		msg,
-		slog.String(ServiceKey, l.serviceName),
+		slog.String(ProducerKey, l.producerName),
 		slog.Any(ContextKey, ctx),
 	)
 }
@@ -60,8 +60,8 @@ const (
 	SourceKey  = "source"
 
 	// Custom keys
-	ServiceKey = "service"
-	ContextKey = "context"
+	ProducerKey = "producer"
+	ContextKey  = "context"
 )
 
 func NewHandler(

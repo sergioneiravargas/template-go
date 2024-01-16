@@ -1,13 +1,14 @@
 package log
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/httplog/v2"
 )
 
 func Middleware(
-	serviceName string,
+	producerName string,
 	env string,
 ) func(next http.Handler) http.Handler {
 	logLevel, err := EnvironmentLevel(env)
@@ -15,7 +16,7 @@ func Middleware(
 		panic(err)
 	}
 
-	logger := httplog.NewLogger(serviceName, httplog.Options{
+	logger := httplog.NewLogger(producerName, httplog.Options{
 		JSON:             true,
 		LogLevel:         logLevel,
 		Concise:          true,
@@ -26,7 +27,19 @@ func Middleware(
 		Tags: map[string]string{
 			"env": env,
 		},
-		ReplaceAttrsOverride: ReplaceAttrs,
+		ReplaceAttrsOverride: func(groups []string, attr slog.Attr) slog.Attr {
+			sourceKey := attr.Key
+			attr = ReplaceAttrs(groups, attr)
+			if sourceKey != attr.Key {
+				return attr
+			}
+
+			if attr.Key == "service" {
+				attr.Key = ProducerKey
+			}
+
+			return attr
+		},
 	})
 
 	return httplog.RequestLogger(logger)

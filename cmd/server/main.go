@@ -144,8 +144,8 @@ func newLogger(
 	handler := log.NewHandler(os.Stdout, appConf.Env)
 
 	return log.NewLogger(
-		handler,
 		appConf.Name,
+		handler,
 	)
 }
 
