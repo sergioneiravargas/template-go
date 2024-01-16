@@ -1,7 +1,10 @@
 PROJECT_NAME := template-go
 
 .PHONY: setup
-setup: setup-env setup-docker build-server
+setup: setup-env setup-docker
+
+.PHONY: build
+build: build-server
 
 .PHONY: setup-env
 setup-env:
