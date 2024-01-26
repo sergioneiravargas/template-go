@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -109,23 +110,54 @@ func newHTTPHandler(
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type"},
-	}))
 	r.Use(log.Middleware(appConf.Name, appConf.Env))
-	r.Use(jwt.Middleware(jwtService))
 
-	// Routes
-	r.Get("/hello-world", func(w http.ResponseWriter, r *http.Request) {
-		logger.Info("HTTP route reached", struct {
-			RoutePath string `json:"routePath"`
-		}{
-			RoutePath: "/hello-world",
+	// API routes
+	r.Group(func(r chi.Router) {
+		// Middlewares
+		r.Use(cors.Handler(cors.Options{
+			AllowedOrigins: []string{"*"},
+			AllowedMethods: []string{"HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS"},
+			AllowedHeaders: []string{"Accept", "Authorization", "Content-Type"},
+		}))
+		r.Use(jwt.Middleware(jwtService))
+
+		// Routes
+		r.Route("/api/v1", func(r chi.Router) {
+			r.Get("/hello-world", func(w http.ResponseWriter, r *http.Request) {
+				logger.Info("HTTP route reached", struct {
+					RoutePath string `json:"routePath"`
+				}{
+					RoutePath: "/hello-world",
+				})
+
+				body, err := json.Marshal(struct {
+					Message string `json:"message"`
+				}{
+					Message: "Hello, World!",
+				})
+				if err != nil {
+					http.Error(w, "Internal server error", http.StatusInternalServerError)
+					return
+				}
+
+				w.Write(body)
+			})
 		})
+	})
 
-		w.Write([]byte("Hello, World!"))
+	// Web routes
+	r.Group(func(r chi.Router) {
+		// Routes
+		r.Get("/hello-world", func(w http.ResponseWriter, r *http.Request) {
+			logger.Info("HTTP route reached", struct {
+				RoutePath string `json:"routePath"`
+			}{
+				RoutePath: "/hello-world",
+			})
+
+			w.Write([]byte("Hello, World!"))
+		})
 	})
 
 	return r
