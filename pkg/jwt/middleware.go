@@ -1,8 +1,16 @@
 package jwt
 
 import (
+	"context"
 	"errors"
 	"net/http"
+)
+
+type ctxKey string
+
+const (
+	TokenKey       ctxKey = "jwtToken"
+	TokenClaimsKey ctxKey = "jwtTokenClaims"
 )
 
 func Middleware(
@@ -33,6 +41,29 @@ func Middleware(
 					}
 					return
 				}
+
+				// Add token to request context
+				r = r.WithContext(
+					context.WithValue(
+						r.Context(),
+						TokenKey,
+						token,
+					),
+				)
+
+				// Add token claims to request context
+				claims, err := service.TokenClaims(token)
+				if err != nil {
+					http.Error(w, "Invalid JWT token", http.StatusUnauthorized)
+					return
+				}
+				r = r.WithContext(
+					context.WithValue(
+						r.Context(),
+						TokenClaimsKey,
+						claims,
+					),
+				)
 
 				next.ServeHTTP(w, r)
 			},
