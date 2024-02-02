@@ -1,4 +1,7 @@
 services:
+  server:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
   postgres:
     container_name: ${APP_NAME}.postgres
     image: postgres:16
