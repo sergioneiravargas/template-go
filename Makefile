@@ -16,7 +16,8 @@ setup-env:
 	echo 'SQL_HOST:' && read sql_host && echo "SQL_HOST=$${sql_host}" >> .env && \
 	echo 'SQL_PORT:' && read sql_port && echo "SQL_PORT=$${sql_port}" >> .env && \
 	echo 'SQL_NAME:' && read sql_name && echo "SQL_NAME=$${sql_name}" >> .env && \
-	echo 'JWT_KEYSET_URL:' && read jwt_keyset_url && echo "JWT_KEYSET_URL=$${jwt_keyset_url}" >> .env
+	echo 'AUTH_KEYSET_URL:' && read auth_keyset_url && echo "AUTH_KEYSET_URL=$${auth_keyset_url}" >> .env && \
+	echo 'AUTH_DOMAIN_URL:' && read auth_domain_url && echo "AUTH_DOMAIN_URL=$${auth_domain_url}" >> .env
 
 .PHONY: setup-docker
 setup-docker:

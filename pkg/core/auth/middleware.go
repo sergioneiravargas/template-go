@@ -1,4 +1,4 @@
-package jwt
+package auth
 
 import (
 	"context"
@@ -11,6 +11,7 @@ type ctxKey string
 const (
 	TokenKey       ctxKey = "jwtToken"
 	TokenClaimsKey ctxKey = "jwtTokenClaims"
+	UserInfoKey    ctxKey = "userInfo"
 )
 
 func Middleware(
@@ -62,6 +63,20 @@ func Middleware(
 						r.Context(),
 						TokenClaimsKey,
 						claims,
+					),
+				)
+
+				// Add user info to request context
+				userInfo, err := service.UserInfo(token)
+				if err != nil {
+					http.Error(w, "Internal server error", http.StatusInternalServerError)
+					return
+				}
+				r = r.WithContext(
+					context.WithValue(
+						r.Context(),
+						UserInfoKey,
+						userInfo,
 					),
 				)
 

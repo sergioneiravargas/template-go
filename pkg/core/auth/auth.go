@@ -1,10 +1,11 @@
-package jwt
+package auth
 
 import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"math/big"
 	"net/http"
 	"strings"
@@ -43,56 +44,38 @@ type Key struct {
 	Use string `json:"use"`
 }
 
-type Service struct {
-	keySet KeySet
+type UserInfo struct {
+	ID string `json:"sub"`
 }
 
-type Conf struct {
-	KeySetURL string
-}
-
-func NewService(
-	conf Conf,
-) *Service {
-	keySet, err := FetchKeySet(conf.KeySetURL)
+func FetchUserInfo(
+	url string,
+	accessToken string,
+) (*UserInfo, error) {
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
+	req.Header.Add("Authorization", "Bearer "+accessToken)
 
-	return &Service{
-		keySet: keySet,
-	}
-}
-
-func (s *Service) ValidateToken(token string) error {
-	parsedToken, err := ParseToken(token, s.keySet)
+	httpClient := &http.Client{}
+	res, err := httpClient.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	defer res.Body.Close()
 
-	if !parsedToken.Valid {
-		return ErrInvalidToken
-	}
-
-	return nil
-}
-
-func (s *Service) TokenClaims(token string) (MapClaims, error) {
-	parsedToken, err := ParseToken(token, s.keySet)
+	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	if !parsedToken.Valid {
-		return nil, ErrInvalidToken
+	var userInfo UserInfo
+	if err := json.Unmarshal(body, &userInfo); err != nil {
+		return nil, err
 	}
 
-	claims, validClaims := parsedToken.Claims.(MapClaims)
-	if !validClaims {
-		return nil, ErrInvalidTokenClaims
-	}
-
-	return claims, nil
+	return &userInfo, nil
 }
 
 func FetchKeySet(url string) (KeySet, error) {

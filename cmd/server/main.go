@@ -8,7 +8,7 @@ import (
 	"os"
 	"slices"
 
-	"template-go/pkg/jwt"
+	"template-go/pkg/core/auth"
 	"template-go/pkg/log"
 	"template-go/pkg/sql"
 
@@ -24,7 +24,7 @@ func main() {
 			newAppConf,
 			newSQLDB,
 			newLogger,
-			newJWTService,
+			newAuthService,
 			newHTTPHandler,
 		),
 		fx.Invoke(configureLifecycleHooks),
@@ -59,8 +59,8 @@ type AppConf struct {
 	Name string
 	Env  string
 
-	SQLConf sql.Conf
-	JWTConf jwt.Conf
+	SQLConf  sql.Conf
+	AuthConf auth.Conf
 }
 
 func newAppConf() AppConf {
@@ -87,21 +87,22 @@ func newAppConf() AppConf {
 		Driver:   "pgx",
 	}
 
-	jwtConf := jwt.Conf{
-		KeySetURL: os.Getenv("JWT_KEYSET_URL"),
+	authConf := auth.Conf{
+		KeySetURL: os.Getenv("AUTH_KEYSET_URL"),
+		DomainURL: os.Getenv("AUTH_DOMAIN_URL"),
 	}
 
 	return AppConf{
-		Name:    appName,
-		Env:     appEnv,
-		SQLConf: sqlConf,
-		JWTConf: jwtConf,
+		Name:     appName,
+		Env:      appEnv,
+		SQLConf:  sqlConf,
+		AuthConf: authConf,
 	}
 }
 
 func newHTTPHandler(
 	appConf AppConf,
-	jwtService *jwt.Service,
+	authService *auth.Service,
 	logger *log.Logger,
 ) http.Handler {
 	r := chi.NewRouter()
@@ -120,7 +121,7 @@ func newHTTPHandler(
 			AllowedMethods: []string{"HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS"},
 			AllowedHeaders: []string{"Accept", "Authorization", "Content-Type"},
 		}))
-		r.Use(jwt.Middleware(jwtService))
+		r.Use(auth.Middleware(authService))
 
 		// Routes
 		r.Route("/api/v1", func(r chi.Router) {
@@ -134,7 +135,7 @@ func newHTTPHandler(
 				body, err := json.Marshal(struct {
 					Message string `json:"message"`
 				}{
-					Message: "Hello, World!",
+					Message: fmt.Sprintf("Hello, %s!", r.Context().Value(auth.UserInfoKey).(*auth.UserInfo).ID),
 				})
 				if err != nil {
 					http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -187,10 +188,10 @@ func newLogger(
 	)
 }
 
-func newJWTService(
+func newAuthService(
 	appConf AppConf,
-) *jwt.Service {
-	return jwt.NewService(
-		appConf.JWTConf,
+) *auth.Service {
+	return auth.NewService(
+		appConf.AuthConf,
 	)
 }
