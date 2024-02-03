@@ -135,7 +135,7 @@ func newHTTPHandler(
 				body, err := json.Marshal(struct {
 					Message string `json:"message"`
 				}{
-					Message: fmt.Sprintf("Hello, %s!", r.Context().Value(auth.UserInfoKey).(*auth.UserInfo).ID),
+					Message: fmt.Sprintf("Hello, %s!", r.Context().Value(auth.UserInfoKey).(auth.UserInfo).ID),
 				})
 				if err != nil {
 					http.Error(w, "Internal server error", http.StatusInternalServerError)

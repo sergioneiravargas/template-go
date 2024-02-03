@@ -76,7 +76,7 @@ func Middleware(
 					context.WithValue(
 						r.Context(),
 						UserInfoKey,
-						userInfo,
+						*userInfo,
 					),
 				)
 
