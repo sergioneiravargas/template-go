@@ -5,17 +5,20 @@ import (
 	"time"
 )
 
+// Service for auth operations
 type Service struct {
 	keySet        KeySet
 	domainURL     string
 	userInfoCache *cache.Cache[string, *UserInfo]
 }
 
+// Auth service configuration
 type Conf struct {
 	KeySetURL string
 	DomainURL string
 }
 
+// Creates a new auth service
 func NewService(
 	conf Conf,
 ) *Service {
@@ -36,6 +39,7 @@ func NewService(
 	}
 }
 
+// Validates the given token
 func (s *Service) ValidateToken(token string) error {
 	parsedToken, err := ParseToken(token, s.keySet)
 	if err != nil {
@@ -49,6 +53,7 @@ func (s *Service) ValidateToken(token string) error {
 	return nil
 }
 
+// Retrieves the claims from the given token
 func (s *Service) TokenClaims(token string) (MapClaims, error) {
 	parsedToken, err := ParseToken(token, s.keySet)
 	if err != nil {
@@ -67,6 +72,7 @@ func (s *Service) TokenClaims(token string) (MapClaims, error) {
 	return claims, nil
 }
 
+// Retrieves the user information from the given access token
 func (s *Service) UserInfo(
 	token string,
 ) (*UserInfo, error) {

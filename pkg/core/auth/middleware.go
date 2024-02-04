@@ -14,6 +14,7 @@ const (
 	UserInfoKey    ctxKey = "userInfo"
 )
 
+// Middleware for JWT based user authentication
 func Middleware(
 	service *Service,
 ) func(next http.Handler) http.Handler {

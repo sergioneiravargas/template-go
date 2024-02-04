@@ -27,14 +27,13 @@ var (
 	ErrRSAPublicKeyCouldNotBeDecoded = errors.New("rsa public key could not be decoded")
 )
 
+// JSON Web Token (JWT)
 type Token = jwt.Token
 
+// JWT Map Claims
 type MapClaims = jwt.MapClaims
 
-type KeySet struct {
-	Keys []Key `json:"keys"`
-}
-
+// JSON Web Key (JWK)
 type Key struct {
 	Kid string `json:"kid"`
 	Alg string `json:"alg"`
@@ -44,10 +43,17 @@ type Key struct {
 	Use string `json:"use"`
 }
 
+// JSON Web Key Set (JWKS)
+type KeySet struct {
+	Keys []Key `json:"keys"`
+}
+
+// The user information contained in the OIDC claims
 type UserInfo struct {
 	ID string `json:"sub"`
 }
 
+// Fetches user info from the given URL
 func FetchUserInfo(
 	url string,
 	accessToken string,
@@ -78,6 +84,7 @@ func FetchUserInfo(
 	return &userInfo, nil
 }
 
+// Fetches the key set from the given URL
 func FetchKeySet(url string) (KeySet, error) {
 	res, err := http.Get(url)
 	if err != nil {
@@ -93,6 +100,7 @@ func FetchKeySet(url string) (KeySet, error) {
 	return keySet, nil
 }
 
+// Extracts the token from the given header
 func TokenFromHeader(header string) (string, error) {
 	if len(header) > 7 && strings.ToUpper(header[0:6]) == "BEARER" {
 		token := strings.Clone(header[7:])
@@ -103,6 +111,7 @@ func TokenFromHeader(header string) (string, error) {
 	return "", ErrInvalidHeader
 }
 
+// Parses the token using the given JWKS
 func ParseToken(token string, keySet KeySet) (*Token, error) {
 	parsedToken, err := jwt.Parse(
 		token,
@@ -138,6 +147,7 @@ func ParseToken(token string, keySet KeySet) (*Token, error) {
 	return parsedToken, nil
 }
 
+// Extracts the RSA public key from the given JWK
 func RSAPublicKey(key Key) (rsa.PublicKey, error) {
 	nb, err := base64.RawURLEncoding.DecodeString(key.N)
 	if err != nil {
