@@ -1,8 +1,9 @@
 package cache_test
 
 import (
-	"template-go/pkg/cache"
 	"testing"
+
+	"template-go/pkg/cache"
 )
 
 func TestCache(t *testing.T) {

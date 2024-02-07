@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -53,7 +54,7 @@ type UserInfo struct {
 	ID string `json:"sub"`
 }
 
-// Fetches user info from the given URL
+// Fetches UserInfo from the given URL
 func FetchUserInfo(
 	url string,
 	accessToken string,
@@ -163,4 +164,75 @@ func RSAPublicKey(key Key) (rsa.PublicKey, error) {
 		N: big.NewInt(0).SetBytes(nb),
 		E: int(big.NewInt(0).SetBytes(eb).Int64()),
 	}, nil
+}
+
+type ctxKey uint
+
+const (
+	tokenCtxKey ctxKey = iota
+	tokenClaimsCtxKey
+	userInfoCtxKey
+)
+
+// Returns a shallow copy of the request with the given token in its context
+func RequestWithToken(r *http.Request, token string) *http.Request {
+	return r.WithContext(
+		context.WithValue(
+			r.Context(),
+			tokenCtxKey,
+			token,
+		),
+	)
+}
+
+// Extracts the token from the given request's context
+func TokenFromRequest(r *http.Request) (string, bool) {
+	token, ok := r.Context().Value(tokenCtxKey).(string)
+	if !ok {
+		return "", false
+	}
+
+	return token, true
+}
+
+// Returns a shallow copy of the request with the given token claims in its context
+func RequestWithTokenClaims(r *http.Request, claims MapClaims) *http.Request {
+	return r.WithContext(
+		context.WithValue(
+			r.Context(),
+			tokenClaimsCtxKey,
+			claims,
+		),
+	)
+}
+
+// Extracts the token claims from the given request's context
+func TokenClaimsFromRequest(r *http.Request) (MapClaims, bool) {
+	claims, ok := r.Context().Value(tokenClaimsCtxKey).(MapClaims)
+	if !ok {
+		return nil, false
+	}
+
+	return claims, true
+}
+
+// Returns a shallow copy of the request with the given user information in its context
+func RequestWithUserInfo(r *http.Request, userInfo UserInfo) *http.Request {
+	return r.WithContext(
+		context.WithValue(
+			r.Context(),
+			userInfoCtxKey,
+			userInfo,
+		),
+	)
+}
+
+// Extracts the user information from the given request's context
+func UserInfoFromRequest(r *http.Request) (UserInfo, bool) {
+	userInfo, ok := r.Context().Value(userInfoCtxKey).(UserInfo)
+	if !ok {
+		return UserInfo{}, false
+	}
+
+	return userInfo, true
 }

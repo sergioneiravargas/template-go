@@ -1,17 +1,8 @@
 package auth
 
 import (
-	"context"
 	"errors"
 	"net/http"
-)
-
-type ctxKey string
-
-const (
-	TokenKey       ctxKey = "jwtToken"
-	TokenClaimsKey ctxKey = "jwtTokenClaims"
-	UserInfoKey    ctxKey = "userInfo"
 )
 
 // Middleware for JWT based user authentication
@@ -44,42 +35,24 @@ func Middleware(
 					return
 				}
 
-				// Add token to request context
-				r = r.WithContext(
-					context.WithValue(
-						r.Context(),
-						TokenKey,
-						token,
-					),
-				)
+				// Add the access token to the request's context
+				r = RequestWithToken(r, token)
 
-				// Add token claims to request context
+				// Add the token claims to the request's context
 				claims, err := service.TokenClaims(token)
 				if err != nil {
 					http.Error(w, "Invalid JWT token", http.StatusUnauthorized)
 					return
 				}
-				r = r.WithContext(
-					context.WithValue(
-						r.Context(),
-						TokenClaimsKey,
-						claims,
-					),
-				)
+				r = RequestWithTokenClaims(r, claims)
 
-				// Add user info to request context
+				// Add the user information to the request's context
 				userInfo, err := service.UserInfo(token)
 				if err != nil {
 					http.Error(w, "Internal server error", http.StatusInternalServerError)
 					return
 				}
-				r = r.WithContext(
-					context.WithValue(
-						r.Context(),
-						UserInfoKey,
-						*userInfo,
-					),
-				)
+				r = RequestWithUserInfo(r, *userInfo)
 
 				next.ServeHTTP(w, r)
 			},

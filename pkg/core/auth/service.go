@@ -76,7 +76,7 @@ func (s *Service) TokenClaims(token string) (MapClaims, error) {
 func (s *Service) UserInfo(
 	token string,
 ) (*UserInfo, error) {
-	// Check if user info is in cache
+	// Check if the user information is in cache
 	claims, err := s.TokenClaims(token)
 	if err != nil {
 		return nil, err
@@ -92,7 +92,7 @@ func (s *Service) UserInfo(
 		return userInfo, nil
 	}
 
-	// Fetch user info
+	// Fetch the user information
 	userInfo, err = FetchUserInfo(s.domainURL+"/oauth2/userInfo", token)
 	if err != nil {
 		return nil, err
