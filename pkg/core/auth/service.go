@@ -1,8 +1,9 @@
 package auth
 
 import (
-	"template-go/pkg/cache"
 	"time"
+
+	"template-go/pkg/cache"
 )
 
 // Service for auth operations
