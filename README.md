@@ -1,5 +1,5 @@
 # Go starter template
-This is meant to be a quickstart for web services in Go with AWS Cognito based authentication.
+This is meant to be a quickstart for web services in Go with Auth0 based authentication.
 
 ## Requirements
 - **GNU Make:** *optional, enables some useful commands*

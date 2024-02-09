@@ -94,7 +94,7 @@ func (s *Service) UserInfo(
 	}
 
 	// Fetch the user information
-	userInfo, err = FetchUserInfo(s.domainURL+"/oauth2/userInfo", token)
+	userInfo, err = FetchUserInfo(s.domainURL+"/userinfo", token)
 	if err != nil {
 		return nil, err
 	}
