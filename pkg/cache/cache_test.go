@@ -18,8 +18,8 @@ func TestCache(t *testing.T) {
 	cache.Set(key1, value1)
 	cache.Set(key2, value2)
 
-	value, ok := cache.Get(key1)
-	if !ok {
+	value, found := cache.Get(key1)
+	if !found {
 		t.Errorf("expected value to be found for key '%s'", key1)
 	}
 
@@ -27,8 +27,8 @@ func TestCache(t *testing.T) {
 		t.Errorf("expected value to be '%s'", value1)
 	}
 
-	value, ok = cache.Get(key2)
-	if !ok {
+	value, found = cache.Get(key2)
+	if !found {
 		t.Errorf("expected value to be found for key '%s'", key2)
 	}
 
@@ -37,14 +37,14 @@ func TestCache(t *testing.T) {
 	}
 
 	cache.Unset(key1)
-	_, ok = cache.Get(key1)
-	if ok {
+	_, found = cache.Get(key1)
+	if found {
 		t.Errorf("expected value not to be found for key '%s'", key1)
 	}
 
 	cache.Unset(key2)
-	_, ok = cache.Get(key2)
-	if ok {
+	_, found = cache.Get(key2)
+	if found {
 		t.Errorf("expected value not to be found for key '%s'", key2)
 	}
 }

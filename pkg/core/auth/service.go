@@ -65,8 +65,8 @@ func (s *Service) TokenClaims(token string) (MapClaims, error) {
 		return nil, ErrInvalidToken
 	}
 
-	claims, validClaims := parsedToken.Claims.(MapClaims)
-	if !validClaims {
+	claims, valid := parsedToken.Claims.(MapClaims)
+	if !valid {
 		return nil, ErrInvalidTokenClaims
 	}
 
@@ -83,13 +83,13 @@ func (s *Service) UserInfo(
 		return nil, err
 	}
 
-	userID, validValue := claims["sub"].(string)
-	if !validValue {
+	userID, valid := claims["sub"].(string)
+	if !valid {
 		return nil, ErrInvalidTokenClaims
 	}
 
-	userInfo, valueFound := s.userInfoCache.Get(userID)
-	if valueFound {
+	userInfo, found := s.userInfoCache.Get(userID)
+	if found {
 		return userInfo, nil
 	}
 

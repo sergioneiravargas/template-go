@@ -187,8 +187,8 @@ func RequestWithToken(r *http.Request, token string) *http.Request {
 
 // Extracts the token from the given request's context
 func TokenFromRequest(r *http.Request) (string, bool) {
-	token, ok := r.Context().Value(tokenCtxKey).(string)
-	if !ok {
+	token, valid := r.Context().Value(tokenCtxKey).(string)
+	if !valid {
 		return "", false
 	}
 
@@ -208,8 +208,8 @@ func RequestWithTokenClaims(r *http.Request, claims MapClaims) *http.Request {
 
 // Extracts the token claims from the given request's context
 func TokenClaimsFromRequest(r *http.Request) (MapClaims, bool) {
-	claims, ok := r.Context().Value(tokenClaimsCtxKey).(MapClaims)
-	if !ok {
+	claims, valid := r.Context().Value(tokenClaimsCtxKey).(MapClaims)
+	if !valid {
 		return nil, false
 	}
 
@@ -229,8 +229,8 @@ func RequestWithUserInfo(r *http.Request, userInfo UserInfo) *http.Request {
 
 // Extracts the user information from the given request's context
 func UserInfoFromRequest(r *http.Request) (UserInfo, bool) {
-	userInfo, ok := r.Context().Value(userInfoCtxKey).(UserInfo)
-	if !ok {
+	userInfo, valid := r.Context().Value(userInfoCtxKey).(UserInfo)
+	if !valid {
 		return UserInfo{}, false
 	}
 

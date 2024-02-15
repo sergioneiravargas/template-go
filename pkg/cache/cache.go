@@ -62,9 +62,9 @@ func (c *Cache[K, V]) Get(key K) (V, bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	value, ok := c.items[key]
+	value, found := c.items[key]
 
-	return value.value, ok
+	return value.value, found
 }
 
 func (c *Cache[K, V]) Set(key K, value V) {
