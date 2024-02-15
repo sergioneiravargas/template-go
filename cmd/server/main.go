@@ -127,7 +127,7 @@ func newHTTPHandler(
 		r.Route("/api/v1", func(r chi.Router) {
 			r.Get("/hello-world", func(w http.ResponseWriter, r *http.Request) {
 				logger.Info("HTTP route reached", struct {
-					RoutePath string `json:"routePath"`
+					RoutePath string `json:"route_path"`
 				}{
 					RoutePath: "/hello-world",
 				})
@@ -158,7 +158,7 @@ func newHTTPHandler(
 		// Routes
 		r.Get("/hello-world", func(w http.ResponseWriter, r *http.Request) {
 			logger.Info("HTTP route reached", struct {
-				RoutePath string `json:"routePath"`
+				RoutePath string `json:"route_path"`
 			}{
 				RoutePath: "/hello-world",
 			})
