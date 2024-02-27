@@ -139,7 +139,7 @@ func newHTTPHandler(
 				logger.Info("HTTP route reached", struct {
 					RoutePath string `json:"route_path"`
 				}{
-					RoutePath: "/hello-world",
+					RoutePath: r.URL.Path,
 				})
 
 				userInfo, found := auth.UserInfoFromRequest(r)
@@ -170,7 +170,7 @@ func newHTTPHandler(
 			logger.Info("HTTP route reached", struct {
 				RoutePath string `json:"route_path"`
 			}{
-				RoutePath: "/hello-world",
+				RoutePath: r.URL.Path,
 			})
 
 			w.Write([]byte("Hello, World!"))
