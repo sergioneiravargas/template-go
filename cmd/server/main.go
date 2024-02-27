@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"time"
 
 	"template-go/pkg/core/auth"
-	"template-go/pkg/log"
-	"template-go/pkg/sql"
+	"template-go/pkg/framework/cache"
+	"template-go/pkg/framework/log"
+	"template-go/pkg/framework/sql"
 
 	"github.com/go-chi/chi/middleware"
 	"github.com/go-chi/chi/v5"
@@ -64,6 +66,7 @@ type AppConf struct {
 }
 
 func newAppConf() AppConf {
+	// App configuration
 	appName := os.Getenv("APP_NAME")
 	if appName == "" {
 		panic("missing application name")
@@ -78,6 +81,7 @@ func newAppConf() AppConf {
 		panic(fmt.Sprintf("unsupported application environment \"%s\"", appEnv))
 	}
 
+	// SQL configuration
 	sqlConf := sql.Conf{
 		Host:     os.Getenv("SQL_HOST"),
 		Port:     os.Getenv("SQL_PORT"),
@@ -87,8 +91,14 @@ func newAppConf() AppConf {
 		Driver:   "pgx",
 	}
 
+	// Auth configuration
+	keySet, err := auth.FetchKeySet(os.Getenv("AUTH_KEYSET_URL"))
+	if err != nil {
+		panic(err)
+	}
+
 	authConf := auth.Conf{
-		KeySetURL: os.Getenv("AUTH_KEYSET_URL"),
+		KeySet:    keySet,
 		DomainURL: os.Getenv("AUTH_DOMAIN_URL"),
 	}
 
@@ -197,7 +207,13 @@ func newLogger(
 func newAuthService(
 	appConf AppConf,
 ) *auth.Service {
+	userInfoCache := cache.New[string, *auth.UserInfo](
+		cache.WithTTL[string, *auth.UserInfo](10*time.Minute),
+		cache.WithCleanupInterval[string, *auth.UserInfo](30*time.Second),
+	)
+
 	return auth.NewService(
 		appConf.AuthConf,
+		auth.ServiceWithUserInfoCache(userInfoCache),
 	)
 }

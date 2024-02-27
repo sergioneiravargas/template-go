@@ -1,43 +1,49 @@
 package auth
 
-import (
-	"time"
-
-	"template-go/pkg/cache"
-)
+type UserInfoCache interface {
+	Get(key string) (value *UserInfo, found bool)
+	Set(key string, value *UserInfo)
+	Unset(key string)
+}
 
 // Service for auth operations
 type Service struct {
 	keySet        KeySet
 	domainURL     string
-	userInfoCache *cache.Cache[string, *UserInfo]
+	userInfoCache UserInfoCache
 }
 
 // Auth service configuration
 type Conf struct {
-	KeySetURL string
+	KeySet    KeySet
 	DomainURL string
+}
+
+// Service option
+type ServiceOption func(*Service)
+
+// Service option to set the user info cache
+func ServiceWithUserInfoCache(cache UserInfoCache) ServiceOption {
+	return func(s *Service) {
+		s.userInfoCache = cache
+	}
 }
 
 // Creates a new auth service
 func NewService(
 	conf Conf,
+	opts ...ServiceOption,
 ) *Service {
-	keySet, err := FetchKeySet(conf.KeySetURL)
-	if err != nil {
-		panic(err)
+	service := Service{
+		keySet:    conf.KeySet,
+		domainURL: conf.DomainURL,
 	}
 
-	userInfoCache := cache.New[string, *UserInfo](
-		cache.WithTTL[string, *UserInfo](10*time.Minute),
-		cache.WithCleanupInterval[string, *UserInfo](30*time.Second),
-	)
-
-	return &Service{
-		keySet:        keySet,
-		domainURL:     conf.DomainURL,
-		userInfoCache: userInfoCache,
+	for _, opt := range opts {
+		opt(&service)
 	}
+
+	return &service
 }
 
 // Validates the given token
@@ -88,17 +94,24 @@ func (s *Service) UserInfo(
 		return nil, ErrInvalidTokenClaims
 	}
 
-	userInfo, found := s.userInfoCache.Get(userID)
-	if found {
-		return userInfo, nil
+	if s.userInfoCache != nil {
+		//  Check if the user information is in cache and return it if found
+		userInfo, found := s.userInfoCache.Get(userID)
+		if found {
+			return userInfo, nil
+		}
 	}
 
 	// Fetch the user information
-	userInfo, err = FetchUserInfo(s.domainURL+"/userinfo", token)
+	userInfo, err := FetchUserInfo(s.domainURL+"/userinfo", token)
 	if err != nil {
 		return nil, err
 	}
-	s.userInfoCache.Set(userInfo.ID, userInfo)
+
+	if s.userInfoCache != nil {
+		// Add the user information to cache
+		s.userInfoCache.Set(userID, userInfo)
+	}
 
 	return userInfo, nil
 }
