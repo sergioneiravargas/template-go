@@ -1,4 +1,4 @@
-PROJECT_NAME := template-go
+PROJECT_NAME := github.com/sergioneiravargas/template-go
 
 .PHONY: setup
 setup: setup-env setup-docker

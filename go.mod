@@ -1,4 +1,4 @@
-module template-go
+module github.com/sergioneiravargas/template-go
 
 go 1.21.1
 

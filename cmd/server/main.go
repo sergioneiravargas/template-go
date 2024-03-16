@@ -9,10 +9,10 @@ import (
 	"slices"
 	"time"
 
-	"template-go/pkg/core/auth"
-	"template-go/pkg/framework/cache"
-	"template-go/pkg/framework/log"
-	"template-go/pkg/framework/sql"
+	"github.com/sergioneiravargas/template-go/pkg/core/auth"
+	"github.com/sergioneiravargas/template-go/pkg/framework/cache"
+	"github.com/sergioneiravargas/template-go/pkg/framework/log"
+	"github.com/sergioneiravargas/template-go/pkg/framework/sql"
 
 	"github.com/go-chi/chi/middleware"
 	"github.com/go-chi/chi/v5"

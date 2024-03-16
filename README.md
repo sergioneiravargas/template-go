@@ -12,7 +12,7 @@ This steps will help you to setup the project for the first time.
 ### Step 1
 Edit the following variable value in the **Makefile** so it fit your needs:
 ```
-PROJECT_NAME := template-go
+PROJECT_NAME := github.com/sergioneiravargas/template-go
 ```
 **Note:** *the PROJECT_NAME variable will be used as a prefix for all your Docker Compose service names.*
 

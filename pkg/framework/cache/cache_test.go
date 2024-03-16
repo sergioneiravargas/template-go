@@ -3,7 +3,7 @@ package cache_test
 import (
 	"testing"
 
-	"template-go/pkg/framework/cache"
+	"github.com/sergioneiravargas/template-go/pkg/framework/cache"
 )
 
 func TestCache(t *testing.T) {
