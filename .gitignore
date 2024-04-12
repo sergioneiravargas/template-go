@@ -1,4 +1,3 @@
 docker-compose.yaml.local
 .env
-dist/*
-!dist/.gitkeep
+bin/*

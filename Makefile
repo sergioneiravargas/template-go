@@ -1,76 +1,52 @@
-PROJECT_NAME := github.com/sergioneiravargas/template-go
+GO_MODULE_NAME := github.com/sergioneiravargas/template-go
 
-.PHONY: setup
-setup: setup-env setup-docker
+include .env
+export
+
+.PHONY: run
+run: build up
 
 .PHONY: build
 build: build-server
 
-.PHONY: setup-env
-setup-env:
-	@> .env && \
-	echo "APP_NAME=${PROJECT_NAME}" >> .env && \
-	echo 'APP_ENV:' && read app_env && echo "APP_ENV=$${app_env}" >> .env && \
-	echo 'SQL_USER:' && read sql_user && echo "SQL_USER=$${sql_user}" >> .env && \
-	echo 'SQL_PASSWORD:' && read sql_password && echo "SQL_PASSWORD=$${sql_password}" >> .env && \
-	echo 'SQL_HOST:' && read sql_host && echo "SQL_HOST=$${sql_host}" >> .env && \
-	echo 'SQL_PORT:' && read sql_port && echo "SQL_PORT=$${sql_port}" >> .env && \
-	echo 'SQL_NAME:' && read sql_name && echo "SQL_NAME=$${sql_name}" >> .env && \
-	echo 'AUTH_KEYSET_URL:' && read auth_keyset_url && echo "AUTH_KEYSET_URL=$${auth_keyset_url}" >> .env && \
-	echo 'AUTH_DOMAIN_URL:' && read auth_domain_url && echo "AUTH_DOMAIN_URL=$${auth_domain_url}" >> .env
-
-.PHONY: setup-docker
-setup-docker:
-	@[ -e ./docker-compose.yaml.local ] || cp ./docker-compose.yaml.local.dist ./docker-compose.yaml.local
-
 .PHONY: build-server
 build-server:
-	@docker run --rm -v ./:/code -w /code \
-	-e CGO_ENABLED=0 \
-	-e GOOS=linux \
-	-e GOARCH=amd64 \
-	golang:1.21-alpine \
-	go build -o ./dist/server ./cmd/server/main.go
-
-.PHONY: go
-go:
-	@echo 'go command:' && \
-	read go_command && \
-	docker run --rm -v ./:/code -w /code golang:1.21-alpine \
-	go $${go_command}
-
-.PHONY: loc
-loc:
-	@find ./ -name '*.go' | xargs wc -l | tail -1
+	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ./bin/server ./cmd/server/main.go
 
 .PHONY: up
 up:
-	@docker compose -f docker-compose.yaml -f docker-compose.yaml.local up -d --build --remove-orphans
+	@docker compose -f docker-compose.yaml -f docker-compose.yaml.local up --build --remove-orphans
 
 .PHONY: down
 down:
 	@docker compose -f docker-compose.yaml -f docker-compose.yaml.local down
 
-.PHONY: restart
-restart:
-	@echo 'service name:' && \
-	read service_name && \
-	docker restart ${PROJECT_NAME}.$${service_name}
-
 .PHONY: exec
 exec:
-	@echo 'service name:' && \
-	read service_name && \
-	docker exec -it ${PROJECT_NAME}.$${service_name} ash
+	@echo 'service name:' && read service_name && \
+	docker exec -it ${APP_NAME}.$${service_name} ash
 
 .PHONY: logs
 logs:
-	@echo 'service name:' && \
-	read service_name && \
-	docker logs -f -n 50 ${PROJECT_NAME}.$${service_name}
+	@echo 'service name:' && read service_name && \
+	docker logs -f -n 50 ${APP_NAME}.$${service_name}
 
 .PHONY: stats
 stats:
-	@echo 'service name:' && \
-	read service_name && \
-	docker stats ${PROJECT_NAME}.$${service_name}
+	@echo 'service name:' && read service_name && \
+	docker stats ${APP_NAME}.$${service_name}
+
+.PHONY: loc
+loc:
+	@find ./ -name '*.go' | xargs wc -l | tail -1
+
+.PHONY: test
+test:
+	@go test -v ./...
+
+# Don't forget to run this command before making any changes to the project
+.PHONY: init
+init:
+	@echo 'go module name?' && read new_go_module_name && \
+	find . -type d -name .git -prune -type f -name .git -prune -o -type f -exec sed -i "s|${GO_MODULE_NAME}|$${new_go_module_name}|g" {} + && \
+	head -n -7 Makefile > Makefile.tmp && mv Makefile.tmp Makefile

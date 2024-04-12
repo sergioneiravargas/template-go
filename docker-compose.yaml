@@ -12,5 +12,5 @@ services:
       - .env
     working_dir: /
     volumes:
-      - ./dist/server:/usr/bin/server
+      - ./bin/server:/usr/bin/server
     command: ["server"]
