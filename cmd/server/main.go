@@ -183,13 +183,8 @@ func newHTTPHandler(
 func newSQLDB(
 	appConf AppConf,
 ) *sql.DB {
-	setupFunc := func(db *sql.DB) error {
-		return nil
-	}
-
 	return sql.NewDB(
 		appConf.SQLConf,
-		setupFunc,
 	)
 }
 
