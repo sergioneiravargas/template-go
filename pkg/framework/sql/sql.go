@@ -3,6 +3,8 @@ package sql
 import (
 	"database/sql"
 	"fmt"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 type DB = sql.DB
@@ -13,7 +15,6 @@ type Conf struct {
 	Name     string
 	User     string
 	Password string
-	Driver   string
 }
 
 func NewDB(
@@ -28,7 +29,7 @@ func NewDB(
 		conf.Name,
 	)
 
-	db, err := sql.Open(conf.Driver, connStr)
+	db, err := sql.Open("pgx", connStr)
 	if err != nil {
 		panic(err)
 	}
