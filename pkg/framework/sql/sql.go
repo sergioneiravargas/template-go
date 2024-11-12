@@ -5,12 +5,6 @@ import (
 	"fmt"
 )
 
-var (
-	ErrConnDone = sql.ErrConnDone
-	ErrNoRows   = sql.ErrNoRows
-	ErrTxDone   = sql.ErrTxDone
-)
-
 type DB = sql.DB
 
 type Conf struct {
