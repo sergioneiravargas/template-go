@@ -85,9 +85,9 @@ func newAppConf() AppConf {
 	sqlConf := sql.Conf{
 		Host:     os.Getenv("SQL_HOST"),
 		Port:     os.Getenv("SQL_PORT"),
-		Name:     os.Getenv("SQL_NAME"),
 		User:     os.Getenv("SQL_USER"),
 		Password: os.Getenv("SQL_PASSWORD"),
+		Name:     os.Getenv("SQL_DATABASE"),
 	}
 
 	// Auth configuration
@@ -111,8 +111,8 @@ func newAppConf() AppConf {
 
 func newHTTPHandler(
 	appConf AppConf,
-	authService *auth.Service,
 	logger *log.Logger,
+	authService *auth.Service,
 ) http.Handler {
 	r := chi.NewRouter()
 

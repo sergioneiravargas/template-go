@@ -55,14 +55,14 @@ migration-create:
 migration-up:
 	@echo 'migrations count (enter the number of migrations to forward or leave empty to forward all migrations):' && \
 	read cmd_arg && \
-	docker run -v ${MIGRATIONS_DIR}:/migrations --add-host host.docker.internal:host-gateway migrate/migrate -source file:///migrations/ -database "postgres://$${SQL_USER}:$${SQL_PASSWORD}@$${SQL_HOST}:$${SQL_PORT}/$${SQL_NAME}?sslmode=disable" up $${cmd_arg}
+	docker run -v ${MIGRATIONS_DIR}:/migrations --add-host host.docker.internal:host-gateway migrate/migrate -source file:///migrations/ -database "postgres://$${SQL_USER}:$${SQL_PASSWORD}@$${SQL_HOST}:$${SQL_PORT}/$${SQL_DATABASE}?sslmode=disable" up $${cmd_arg}
 	
 .PHONY: migration-down
 migration-down:
 	@echo 'migrations count (enter the number of migrations to reverse or "--all" to reverse all migrations):' && \
 	read cmd_arg && \
 	if [ -z "$$cmd_arg" ]; then echo 'Input cannot be empty' && exit 1; fi && \
-	docker run -v ${MIGRATIONS_DIR}:/migrations --add-host host.docker.internal:host-gateway migrate/migrate -source file:///migrations/ -database "postgres://$${SQL_USER}:$${SQL_PASSWORD}@$${SQL_HOST}:$${SQL_PORT}/$${SQL_NAME}?sslmode=disable" down $${cmd_arg}
+	docker run -v ${MIGRATIONS_DIR}:/migrations --add-host host.docker.internal:host-gateway migrate/migrate -source file:///migrations/ -database "postgres://$${SQL_USER}:$${SQL_PASSWORD}@$${SQL_HOST}:$${SQL_PORT}/$${SQL_DATABASE}?sslmode=disable" down $${cmd_arg}
 
 # Don't forget to run this command before making any changes to the project
 .PHONY: init
