@@ -8,15 +8,14 @@ type UserInfoCache interface {
 
 // Service for auth operations
 type Service struct {
-	keySet        KeySet
-	domainURL     string
+	conf          Conf
 	userInfoCache UserInfoCache
 }
 
 // Auth service configuration
 type Conf struct {
-	KeySet    KeySet
-	DomainURL string
+	KeySet      KeySet
+	UserInfoURL string
 }
 
 // Service option
@@ -35,8 +34,7 @@ func NewService(
 	opts ...ServiceOption,
 ) *Service {
 	service := Service{
-		keySet:    conf.KeySet,
-		domainURL: conf.DomainURL,
+		conf: conf,
 	}
 
 	for _, opt := range opts {
@@ -48,7 +46,7 @@ func NewService(
 
 // Validates the given token
 func (s *Service) ValidateToken(token string) error {
-	parsedToken, err := ParseToken(token, s.keySet)
+	parsedToken, err := ParseToken(token, s.conf.KeySet)
 	if err != nil {
 		return err
 	}
@@ -62,7 +60,7 @@ func (s *Service) ValidateToken(token string) error {
 
 // Retrieves the claims from the given token
 func (s *Service) TokenClaims(token string) (MapClaims, error) {
-	parsedToken, err := ParseToken(token, s.keySet)
+	parsedToken, err := ParseToken(token, s.conf.KeySet)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +101,7 @@ func (s *Service) UserInfo(
 	}
 
 	// Fetch the user information
-	userInfo, err := FetchUserInfo(s.domainURL+"/userinfo", token)
+	userInfo, err := FetchUserInfo(s.conf.UserInfoURL, token)
 	if err != nil {
 		return nil, err
 	}

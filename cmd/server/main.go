@@ -91,14 +91,15 @@ func newAppConf() AppConf {
 	}
 
 	// Auth configuration
-	keySet, err := auth.FetchKeySet(os.Getenv("AUTH_KEYSET_URL"))
+	authKeySet, err := auth.FetchKeySet(os.Getenv("AUTH_KEYSET_URL"))
 	if err != nil {
 		panic(err)
 	}
+	authUserInfoURL := os.Getenv("AUTH_USERINFO_URL")
 
 	authConf := auth.Conf{
-		KeySet:    keySet,
-		DomainURL: os.Getenv("AUTH_DOMAIN_URL"),
+		KeySet:      authKeySet,
+		UserInfoURL: authUserInfoURL,
 	}
 
 	return AppConf{
