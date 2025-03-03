@@ -51,7 +51,11 @@ type KeySet struct {
 
 // The user information contained in the OIDC claims
 type UserInfo struct {
-	ID string `json:"sub"`
+	ID            string `json:"sub"`
+	GivenName     string `json:"given_name"`
+	FamilyName    string `json:"family_name"`
+	Email         string `json:"email"`
+	EmailVerified bool   `json:"email_verified"`
 }
 
 // Fetches UserInfo from the given URL
