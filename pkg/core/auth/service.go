@@ -1,5 +1,7 @@
 package auth
 
+import "crypto/rsa"
+
 type UserInfoCache interface {
 	Get(key string) (value *UserInfo, found bool)
 	Set(key string, value *UserInfo)
@@ -16,6 +18,11 @@ type Service struct {
 type Conf struct {
 	KeySet      KeySet
 	UserInfoURL string
+
+	PEMCertificate struct {
+		Private *rsa.PrivateKey
+		Public  *rsa.PublicKey
+	}
 }
 
 // Service option
@@ -46,7 +53,28 @@ func NewService(
 
 // Validates the given token
 func (s *Service) ValidateToken(token string) error {
-	parsedToken, err := ParseToken(token, s.conf.KeySet)
+	if err := ValidateTokenWithPEM(token, s.conf.PEMCertificate.Public); err == nil {
+		return nil
+	}
+
+	return ValidateTokenWithJWKS(token, s.conf.KeySet)
+}
+
+func ValidateTokenWithPEM(token string, key *rsa.PublicKey) error {
+	parsedToken, err := ParseTokenWithPEM(token, key)
+	if err != nil {
+		return err
+	}
+
+	if !parsedToken.Valid {
+		return ErrInvalidToken
+	}
+
+	return nil
+}
+
+func ValidateTokenWithJWKS(token string, keySet KeySet) error {
+	parsedToken, err := ParseTokenWithJWKS(token, keySet)
 	if err != nil {
 		return err
 	}
@@ -60,7 +88,34 @@ func (s *Service) ValidateToken(token string) error {
 
 // Retrieves the claims from the given token
 func (s *Service) TokenClaims(token string) (MapClaims, error) {
-	parsedToken, err := ParseToken(token, s.conf.KeySet)
+	claims, err := TokenClaimsFromPEM(token, s.conf.PEMCertificate.Public)
+	if err == nil {
+		return claims, nil
+	}
+
+	return TokenClaimsFromJWKS(token, s.conf.KeySet)
+}
+
+func TokenClaimsFromPEM(token string, key *rsa.PublicKey) (MapClaims, error) {
+	parsedToken, err := ParseTokenWithPEM(token, key)
+	if err != nil {
+		return nil, err
+	}
+
+	if !parsedToken.Valid {
+		return nil, ErrInvalidToken
+	}
+
+	claims, valid := parsedToken.Claims.(MapClaims)
+	if !valid {
+		return nil, ErrInvalidTokenClaims
+	}
+
+	return claims, nil
+}
+
+func TokenClaimsFromJWKS(token string, keySet KeySet) (MapClaims, error) {
+	parsedToken, err := ParseTokenWithJWKS(token, keySet)
 	if err != nil {
 		return nil, err
 	}
@@ -100,9 +155,18 @@ func (s *Service) UserInfo(
 		}
 	}
 
+	userInfo, err := UserInfoFromClaims(claims)
+	if err == nil && userInfo != nil {
+		// Add the user information to cache
+		s.userInfoCache.Set(userID, userInfo)
+
+		return userInfo, nil
+	}
+
 	// Fetch the user information
-	userInfo, err := FetchUserInfo(s.conf.UserInfoURL, token)
+	userInfo, err = FetchUserInfo(s.conf.UserInfoURL, token)
 	if err != nil {
+
 		return nil, err
 	}
 
@@ -112,4 +176,8 @@ func (s *Service) UserInfo(
 	}
 
 	return userInfo, nil
+}
+
+func (s *Service) GenerateToken(claims MapClaims) (string, error) {
+	return GenerateToken(claims, s.conf.PEMCertificate.Private)
 }

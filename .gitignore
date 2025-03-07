@@ -1,3 +1,5 @@
 docker-compose.yaml.local
 .env
 bin/*
+private.pem
+public.pem

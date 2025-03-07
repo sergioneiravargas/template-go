@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -56,6 +57,38 @@ type UserInfo struct {
 	FamilyName    string `json:"family_name"`
 	Email         string `json:"email"`
 	EmailVerified bool   `json:"email_verified"`
+}
+
+func UserInfoFromClaims(claims MapClaims) (*UserInfo, error) {
+	var userInfo UserInfo
+
+	sub, valid := claims["sub"].(string)
+	if !valid {
+		return nil, fmt.Errorf("invalid claim sub")
+	}
+	userInfo.ID = sub
+
+	givenName, valid := claims["given_name"].(string)
+	if valid {
+		userInfo.GivenName = givenName
+	}
+
+	familyName, valid := claims["family_name"].(string)
+	if valid {
+		userInfo.FamilyName = familyName
+	}
+
+	email, valid := claims["email"].(string)
+	if valid {
+		userInfo.Email = email
+	}
+
+	emailVerified, _ := claims["email_verified"].(bool)
+	if valid {
+		userInfo.EmailVerified = emailVerified
+	}
+
+	return &userInfo, nil
 }
 
 // Fetches UserInfo from the given URL
@@ -116,8 +149,30 @@ func TokenFromHeader(header string) (string, error) {
 	return "", ErrInvalidHeader
 }
 
+func ParseTokenWithPEM(token string, key *rsa.PublicKey) (*Token, error) {
+	parsedToken, err := jwt.Parse(
+		token,
+		func(t *Token) (any, error) {
+			return key, nil
+		},
+	)
+	if err != nil {
+		if errors.Is(err, jwt.ErrTokenMalformed) {
+			return nil, ErrTokenMalformed
+		} else if errors.Is(err, jwt.ErrTokenExpired) {
+			return nil, ErrTokenExpired
+		} else if errors.Is(err, jwt.ErrTokenNotValidYet) {
+			return nil, ErrTokenNotValidYet
+		}
+
+		return nil, ErrTokenCouldNotBeParsed
+	}
+
+	return parsedToken, nil
+}
+
 // Parses the token using the given JWKS
-func ParseToken(token string, keySet KeySet) (*Token, error) {
+func ParseTokenWithJWKS(token string, keySet KeySet) (*Token, error) {
 	parsedToken, err := jwt.Parse(
 		token,
 		func(t *Token) (any, error) {
@@ -126,12 +181,12 @@ func ParseToken(token string, keySet KeySet) (*Token, error) {
 					continue
 				}
 
-				rsa, err := RSAPublicKey(key)
+				rsa, err := LoadPublicKeyFromJKWS(key)
 				if err != nil {
 					return nil, ErrRSAPublicKeyCouldNotBeDecoded
 				}
 
-				return &rsa, nil
+				return rsa, nil
 			}
 
 			return nil, ErrInvalidKeySet
@@ -153,18 +208,18 @@ func ParseToken(token string, keySet KeySet) (*Token, error) {
 }
 
 // Extracts the RSA public key from the given JWK
-func RSAPublicKey(key Key) (rsa.PublicKey, error) {
+func LoadPublicKeyFromJKWS(key Key) (*rsa.PublicKey, error) {
 	nb, err := base64.RawURLEncoding.DecodeString(key.N)
 	if err != nil {
-		return rsa.PublicKey{}, ErrModulusCouldNotBeDecoded
+		return nil, ErrModulusCouldNotBeDecoded
 	}
 
 	eb, err := base64.RawURLEncoding.DecodeString(key.E)
 	if err != nil {
-		return rsa.PublicKey{}, ErrExponentCouldNotBeDecoded
+		return nil, ErrExponentCouldNotBeDecoded
 	}
 
-	return rsa.PublicKey{
+	return &rsa.PublicKey{
 		N: big.NewInt(0).SetBytes(nb),
 		E: int(big.NewInt(0).SetBytes(eb).Int64()),
 	}, nil
@@ -239,4 +294,35 @@ func UserInfoFromRequest(r *http.Request) (UserInfo, bool) {
 	}
 
 	return userInfo, true
+}
+
+// Loads the RSA private key from the given data
+func LoadPrivateKeyFromPEM(data []byte) (*rsa.PrivateKey, error) {
+	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM(data)
+	if err != nil {
+		return nil, err
+	}
+
+	return privateKey, nil
+}
+
+// Loads the RSA public key from the given data
+func LoadPublicKeyFromPEM(data []byte) (*rsa.PublicKey, error) {
+	publicKey, err := jwt.ParseRSAPublicKeyFromPEM(data)
+	if err != nil {
+		return nil, err
+	}
+
+	return publicKey, nil
+}
+
+// Generates a JWT token with the given claims
+func GenerateToken(claims MapClaims, key *rsa.PrivateKey) (string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tokenString, err := token.SignedString(key)
+	if err != nil {
+		return "", err
+	}
+
+	return tokenString, nil
 }

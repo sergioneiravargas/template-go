@@ -64,6 +64,11 @@ migration-down:
 	if [ -z "$$cmd_arg" ]; then echo 'Input cannot be empty' && exit 1; fi && \
 	docker run -v ${MIGRATIONS_DIR}:/migrations --add-host host.docker.internal:host-gateway migrate/migrate -source file:///migrations/ -database "postgres://$${SQL_USER}:$${SQL_PASSWORD}@$${SQL_HOST}:$${SQL_PORT}/$${SQL_DATABASE}?sslmode=disable" down $${cmd_arg}
 
+.PHONY: gen-keys
+gen-keys:
+	@openssl genpkey -algorithm RSA -out private.pem -pkeyopt rsa_keygen_bits:2048 && \
+	openssl rsa -in private.pem -pubout -out public.pem
+
 # Don't forget to run this command before making any changes to the project
 .PHONY: init
 init:

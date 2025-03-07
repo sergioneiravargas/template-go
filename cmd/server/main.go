@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -24,8 +25,10 @@ func main() {
 	app := fx.New(
 		fx.Provide(
 			newAppConf,
-			newSQLDB,
 			newLogger,
+			newSQLConf,
+			newSQLDB,
+			newAuthConf,
 			newAuthService,
 			newHTTPHandler,
 		),
@@ -60,54 +63,6 @@ func configureLifecycleHooks(
 type AppConf struct {
 	Name string
 	Env  string
-
-	SQLConf  sql.Conf
-	AuthConf auth.Conf
-}
-
-func newAppConf() AppConf {
-	// App configuration
-	appName := os.Getenv("APP_NAME")
-	if appName == "" {
-		panic("missing application name")
-	}
-
-	appEnv := os.Getenv("APP_ENV")
-	supportedEnvs := []string{
-		"prod",
-		"dev",
-	}
-	if !slices.Contains(supportedEnvs, appEnv) {
-		panic(fmt.Sprintf("unsupported application environment \"%s\"", appEnv))
-	}
-
-	// SQL configuration
-	sqlConf := sql.Conf{
-		Host:     os.Getenv("SQL_HOST"),
-		Port:     os.Getenv("SQL_PORT"),
-		User:     os.Getenv("SQL_USER"),
-		Password: os.Getenv("SQL_PASSWORD"),
-		Name:     os.Getenv("SQL_DATABASE"),
-	}
-
-	// Auth configuration
-	authKeySet, err := auth.FetchKeySet(os.Getenv("AUTH_KEYSET_URL"))
-	if err != nil {
-		panic(err)
-	}
-	authUserInfoURL := os.Getenv("AUTH_USERINFO_URL")
-
-	authConf := auth.Conf{
-		KeySet:      authKeySet,
-		UserInfoURL: authUserInfoURL,
-	}
-
-	return AppConf{
-		Name:     appName,
-		Env:      appEnv,
-		SQLConf:  sqlConf,
-		AuthConf: authConf,
-	}
 }
 
 func newHTTPHandler(
@@ -180,12 +135,42 @@ func newHTTPHandler(
 	return r
 }
 
+func newAppConf() AppConf {
+	// App configuration
+	appName := os.Getenv("APP_NAME")
+	if appName == "" {
+		panic("missing application name")
+	}
+
+	appEnv := os.Getenv("APP_ENV")
+	supportedEnvs := []string{
+		"prod",
+		"dev",
+	}
+	if !slices.Contains(supportedEnvs, appEnv) {
+		panic(fmt.Sprintf("unsupported application environment \"%s\"", appEnv))
+	}
+
+	return AppConf{
+		Name: appName,
+		Env:  appEnv,
+	}
+}
+
+func newSQLConf() sql.Conf {
+	return sql.Conf{
+		Host:     os.Getenv("SQL_HOST"),
+		Port:     os.Getenv("SQL_PORT"),
+		User:     os.Getenv("SQL_USER"),
+		Password: os.Getenv("SQL_PASSWORD"),
+		Name:     os.Getenv("SQL_DATABASE"),
+	}
+}
+
 func newSQLDB(
-	appConf AppConf,
+	conf sql.Conf,
 ) *sql.DB {
-	return sql.NewDB(
-		appConf.SQLConf,
-	)
+	return sql.NewDB(conf)
 }
 
 func newLogger(
@@ -199,8 +184,46 @@ func newLogger(
 	)
 }
 
+func newAuthConf() auth.Conf {
+	authKeySet, err := auth.FetchKeySet(os.Getenv("AUTH_KEYSET_URL"))
+	if err != nil {
+		panic(err)
+	}
+	authUserInfoURL := os.Getenv("AUTH_USERINFO_URL")
+
+	authPrivateKeyBytes, err := os.ReadFile(os.Getenv("AUTH_PRIVATE_KEY_FILE"))
+	if err != nil {
+		panic(err)
+	}
+	authPrivateKey, err := auth.LoadPrivateKeyFromPEM(authPrivateKeyBytes)
+	if err != nil {
+		panic(err)
+	}
+
+	authPublicKeyBytes, err := os.ReadFile(os.Getenv("AUTH_PUBLIC_KEY_FILE"))
+	if err != nil {
+		panic(err)
+	}
+	authPublicKey, err := auth.LoadPublicKeyFromPEM(authPublicKeyBytes)
+	if err != nil {
+		panic(err)
+	}
+
+	return auth.Conf{
+		KeySet:      authKeySet,
+		UserInfoURL: authUserInfoURL,
+		PEMCertificate: struct {
+			Private *rsa.PrivateKey
+			Public  *rsa.PublicKey
+		}{
+			Private: authPrivateKey,
+			Public:  authPublicKey,
+		},
+	}
+}
+
 func newAuthService(
-	appConf AppConf,
+	conf auth.Conf,
 ) *auth.Service {
 	userInfoCache := cache.New[string, *auth.UserInfo](
 		cache.WithTTL[string, *auth.UserInfo](10*time.Minute),
@@ -208,7 +231,7 @@ func newAuthService(
 	)
 
 	return auth.NewService(
-		appConf.AuthConf,
+		conf,
 		auth.ServiceWithUserInfoCache(userInfoCache),
 	)
 }
