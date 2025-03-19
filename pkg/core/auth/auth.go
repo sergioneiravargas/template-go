@@ -149,6 +149,18 @@ func TokenFromHeader(header string) (string, error) {
 	return "", ErrInvalidHeader
 }
 
+// Extracts the token from the given URL query parameter
+func TokenFromQueryParam(r *http.Request) (string, error) {
+	// get token from url query param specified
+	token := r.URL.Query().Get("access_token")
+	if token == "" {
+		return "", ErrInvalidToken
+	}
+
+	return token, nil
+}
+
+// Parses the token using the given RSA public key
 func ParseTokenWithPEM(token string, key *rsa.PublicKey) (*Token, error) {
 	parsedToken, err := jwt.Parse(
 		token,

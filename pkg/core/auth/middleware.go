@@ -12,16 +12,23 @@ func Middleware(
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(
 			func(w http.ResponseWriter, r *http.Request) {
+				var err error
+				var token string
+
 				header := r.Header.Get("Authorization")
-				if header == "" {
-					http.Error(w, "Missing JWT token", http.StatusUnauthorized)
-					return
+				if header != "" {
+					headerToken, err := TokenFromHeader(header)
+					if err == nil {
+						token = headerToken
+					}
 				}
 
-				token, err := TokenFromHeader(header)
-				if err != nil {
-					http.Error(w, "Invalid JWT token", http.StatusUnauthorized)
-					return
+				if token == "" {
+					token, err = TokenFromQueryParam(r)
+					if err != nil {
+						http.Error(w, "Missing JWT token", http.StatusUnauthorized)
+						return
+					}
 				}
 
 				if err = service.ValidateToken(token); err != nil {
