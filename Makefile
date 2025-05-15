@@ -7,6 +7,10 @@ export
 .PHONY: run
 run: build up
 
+.PHONY: stop
+stop:
+	@docker compose -f docker-compose.yaml -f docker-compose.yaml.local stop
+
 .PHONY: build
 build: build-server
 
@@ -16,7 +20,7 @@ build-server:
 
 .PHONY: up
 up:
-	@docker compose -f docker-compose.yaml -f docker-compose.yaml.local up --build --remove-orphans
+	@docker compose -f docker-compose.yaml -f docker-compose.yaml.local up --build --remove-orphans --detach
 
 .PHONY: down
 down:
