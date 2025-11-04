@@ -156,7 +156,7 @@ func TestQueueMessageHandle(t *testing.T) {
 
 func TestQueueWorkAndShutdown(t *testing.T) {
 	queueName := "test"
-	testMessageName := "test_work_message"
+	testMessageName := "test_work_shutdown_message"
 	messagesHandled := 0
 	handlerChan := make(chan struct{})
 
@@ -265,7 +265,7 @@ func TestQueueShutdownStopsNewMessageFetch(t *testing.T) {
 
 func TestQueueWorkProcessesMultipleMessages(t *testing.T) {
 	queueName := "test"
-	testMessageName := "test_multiple_message"
+	testMessageName := "test_work_multiple_message"
 	messagesHandled := 0
 	expectedMessages := 3
 	handlerChan := make(chan struct{}, expectedMessages)
@@ -330,5 +330,264 @@ func TestQueueWorkProcessesMultipleMessages(t *testing.T) {
 	// Cleanup
 	if err := q.Shutdown(); err != nil {
 		t.Fatalf("failed to shutdown queue: %v", err)
+	}
+}
+
+func TestPoolParallelWorkerExecution(t *testing.T) {
+	queueName := "test"
+	testMessage1Name := "test_pool_parallel_message_1"
+	testMessage2Name := "test_pool_parallel_message_2"
+	testMessage3Name := "test_pool_parallel_message_3"
+
+	// Track which messages were handled
+	message1Handled := 0
+	message2Handled := 0
+	message3Handled := 0
+	handlerChan := make(chan string, 10)
+
+	q := queue.New(
+		queueName,
+		[]*queue.MessageHandler{
+			{
+				CanHandleFunc: func(m *queue.Message) bool {
+					return m.Name == testMessage1Name
+				},
+				HandlerFunc: func(m *queue.Message) error {
+					message1Handled++
+					handlerChan <- testMessage1Name
+					return nil
+				},
+			},
+			{
+				CanHandleFunc: func(m *queue.Message) bool {
+					return m.Name == testMessage2Name
+				},
+				HandlerFunc: func(m *queue.Message) error {
+					message2Handled++
+					handlerChan <- testMessage2Name
+					return nil
+				},
+			},
+			{
+				CanHandleFunc: func(m *queue.Message) bool {
+					return m.Name == testMessage3Name
+				},
+				HandlerFunc: func(m *queue.Message) error {
+					message3Handled++
+					handlerChan <- testMessage3Name
+					return nil
+				},
+			},
+		},
+		conn,
+		logger,
+	)
+
+	// Create a pool with the queue
+	pool := queue.NewPool(q)
+
+	// Dispatch messages with different names
+	for i, messageName := range []string{testMessage1Name, testMessage2Name, testMessage3Name} {
+		message, err := queue.NewMessage(
+			messageName,
+			map[string]any{
+				"message": messageName,
+				"index":   i,
+			},
+		)
+		if err != nil {
+			t.Fatalf("failed to create message %s: %v", messageName, err)
+		}
+
+		if err := pool.Dispatch(queueName, message); err != nil {
+			t.Fatalf("failed to dispatch message %s: %v", messageName, err)
+		}
+	}
+
+	// Start all workers in parallel
+	go func() {
+		pool.Work()
+	}()
+
+	// Wait for all messages to be handled
+	timeout := time.After(5 * time.Second)
+	handledMessages := make(map[string]bool)
+	expectedMessages := 3
+
+	for i := 0; i < expectedMessages; i++ {
+		select {
+		case messageName := <-handlerChan:
+			handledMessages[messageName] = true
+		case <-timeout:
+			t.Fatalf("timeout waiting for all messages to be handled (handled %d/%d)", len(handledMessages), expectedMessages)
+		}
+	}
+
+	// Verify all messages were handled
+	if message1Handled != 1 {
+		t.Fatalf("expected message1 to be handled 1 time, got %d", message1Handled)
+	}
+	if message2Handled != 1 {
+		t.Fatalf("expected message2 to be handled 1 time, got %d", message2Handled)
+	}
+	if message3Handled != 1 {
+		t.Fatalf("expected message3 to be handled 1 time, got %d", message3Handled)
+	}
+
+	// Verify all three messages were handled
+	if len(handledMessages) != expectedMessages {
+		t.Fatalf("expected %d messages to be handled, got %d", expectedMessages, len(handledMessages))
+	}
+
+	// Cleanup
+	if err := pool.Shutdown(); err != nil {
+		t.Fatalf("failed to shutdown pool: %v", err)
+	}
+}
+
+func TestPoolShutdown(t *testing.T) {
+	queueName := "test"
+	testMessage1Name := "test_pool_shutdown_message_1"
+	testMessage2Name := "test_pool_shutdown_message_2"
+
+	handlerChan := make(chan string, 10)
+
+	q := queue.New(
+		queueName,
+		[]*queue.MessageHandler{
+			{
+				CanHandleFunc: func(m *queue.Message) bool {
+					return m.Name == testMessage1Name || m.Name == testMessage2Name
+				},
+				HandlerFunc: func(m *queue.Message) error {
+					handlerChan <- m.Name
+					return nil
+				},
+			},
+		},
+		conn,
+		logger,
+	)
+
+	pool := queue.NewPool(q)
+
+	// Dispatch messages with different names
+	for _, messageName := range []string{testMessage1Name, testMessage2Name} {
+		message, err := queue.NewMessage(
+			messageName,
+			map[string]string{"message": messageName},
+		)
+		if err != nil {
+			t.Fatalf("failed to create message: %v", err)
+		}
+
+		if err := pool.Dispatch(queueName, message); err != nil {
+			t.Fatalf("failed to dispatch message: %v", err)
+		}
+	}
+
+	// Start workers
+	go func() {
+		pool.Work()
+	}()
+
+	// Wait for both messages to be handled
+	timeout := time.After(5 * time.Second)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-handlerChan:
+			// Message handled
+		case <-timeout:
+			t.Fatalf("timeout waiting for messages to be handled")
+		}
+	}
+
+	// Shutdown the pool - should shutdown the queue
+	if err := pool.Shutdown(); err != nil {
+		t.Fatalf("failed to shutdown pool: %v", err)
+	}
+
+	// Verify queue stops fetching after shutdown
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	msg, err := q.FetchMessage(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error fetching after shutdown: %v", err)
+	}
+	if msg != nil {
+		t.Fatal("expected nil message after shutdown")
+	}
+}
+
+func TestPoolWorkWithMultipleMessagesPerQueue(t *testing.T) {
+	queueName := "test"
+	testMessageName := "test_pool_multi_messages_message"
+	totalMessages := 6
+
+	messagesHandled := 0
+	handlerChan := make(chan struct{}, totalMessages)
+
+	q := queue.New(
+		queueName,
+		[]*queue.MessageHandler{
+			{
+				CanHandleFunc: func(m *queue.Message) bool {
+					return m.Name == testMessageName
+				},
+				HandlerFunc: func(m *queue.Message) error {
+					messagesHandled++
+					handlerChan <- struct{}{}
+					return nil
+				},
+			},
+		},
+		conn,
+		logger,
+	)
+
+	pool := queue.NewPool(q)
+
+	// Dispatch multiple messages
+	for i := 0; i < totalMessages; i++ {
+		message, err := queue.NewMessage(
+			testMessageName,
+			map[string]any{
+				"index": i,
+			},
+		)
+		if err != nil {
+			t.Fatalf("failed to create message: %v", err)
+		}
+
+		if err := pool.Dispatch(queueName, message); err != nil {
+			t.Fatalf("failed to dispatch message: %v", err)
+		}
+	}
+
+	// Start workers
+	go func() {
+		pool.Work()
+	}()
+
+	// Wait for all messages to be handled
+	timeout := time.After(10 * time.Second)
+	for i := 0; i < totalMessages; i++ {
+		select {
+		case <-handlerChan:
+			// Message handled
+		case <-timeout:
+			t.Fatalf("timeout waiting for message %d/%d to be handled", i+1, totalMessages)
+		}
+	}
+
+	// Verify correct number of messages handled
+	if messagesHandled != totalMessages {
+		t.Fatalf("expected %d messages to be handled, got %d", totalMessages, messagesHandled)
+	}
+
+	// Cleanup
+	if err := pool.Shutdown(); err != nil {
+		t.Fatalf("failed to shutdown pool: %v", err)
 	}
 }
