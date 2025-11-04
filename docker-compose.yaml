@@ -2,7 +2,9 @@ name: ${APP_NAME}
 services:
   server:
     container_name: ${APP_NAME}.server
-    image: golang:1.21-alpine
+    build:
+      context: .
+      dockerfile: ./docker/server/Dockerfile
     restart: unless-stopped
     expose:
       - "3000" 
@@ -10,7 +12,12 @@ services:
       - "3000:3000"
     env_file:
       - .env
-    working_dir: /
-    volumes:
-      - ./bin/server:/usr/bin/server
-    command: ["server"]
+
+  worker:
+    container_name: ${APP_NAME}.worker
+    build:
+      context: .
+      dockerfile: ./docker/worker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env

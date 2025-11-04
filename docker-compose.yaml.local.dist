@@ -5,6 +5,12 @@ services:
     volumes:
       - ./private.pem:/private.pem
       - ./public.pem:/public.pem
+  worker:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./private.pem:/private.pem
+      - ./public.pem:/public.pem
   postgres:
     container_name: ${APP_NAME}.postgres
     image: postgres:16
@@ -19,3 +25,13 @@ services:
     container_name: ${APP_NAME}.adminer
     ports:
       - "8080:8080"
+  rabbitmq:
+    container_name: ${APP_NAME}.rabbitmq
+    build:
+      context: ./docker/rabbitmq
+    ports:
+      - "${AMQP_PORT}:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=${AMQP_USER}
+      - RABBITMQ_DEFAULT_PASS=${AMQP_PASSWORD}

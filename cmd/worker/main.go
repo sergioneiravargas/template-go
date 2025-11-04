@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rsa"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"slices"
 	"time"
@@ -17,9 +15,6 @@ import (
 	"github.com/sergioneiravargas/template-go/pkg/framework/queue"
 	"github.com/sergioneiravargas/template-go/pkg/framework/sql"
 
-	"github.com/go-chi/chi/middleware"
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/cors"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/fx"
 )
@@ -35,8 +30,6 @@ func main() {
 			newQueuePool,
 			newAuthConf,
 			newAuthService,
-			newHTTPHandler,
-			newHTTPServer,
 		),
 		fx.Invoke(configureLifecycleHooks),
 		fx.NopLogger,
@@ -47,21 +40,17 @@ func main() {
 
 func configureLifecycleHooks(
 	lc fx.Lifecycle,
-	server *http.Server,
 	db *sql.DB,
 	amqpConn *amqp.Connection,
+	pool *queue.Pool,
 ) {
 	lc.Append(fx.Hook{
 		OnStart: func(context.Context) error {
-			go func() {
-				if err := server.ListenAndServe(); err != nil {
-					panic(err)
-				}
-			}()
+			go pool.Work()
 			return nil
 		},
 		OnStop: func(context.Context) error {
-			if err := server.Shutdown(context.TODO()); err != nil {
+			if err := pool.Shutdown(); err != nil {
 				return err
 			}
 			if err := amqpConn.Close(); err != nil {
@@ -78,121 +67,6 @@ func configureLifecycleHooks(
 type AppConf struct {
 	Name string
 	Env  string
-}
-
-func newHTTPServer(
-	handler http.Handler,
-) *http.Server {
-	return &http.Server{
-		Addr:              ":3000",
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-}
-
-func newHTTPHandler(
-	appConf AppConf,
-	logger *log.Logger,
-	queuePool *queue.Pool,
-	authService *auth.Service,
-) http.Handler {
-	r := chi.NewRouter()
-
-	// Middlewares
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
-	r.Use(log.Middleware(appConf.Name, appConf.Env))
-
-	// API routes
-	r.Group(func(r chi.Router) {
-		// Middlewares
-		r.Use(cors.Handler(cors.Options{
-			AllowedOrigins: []string{"*"},
-			AllowedMethods: []string{"HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS"},
-			AllowedHeaders: []string{"Accept", "Authorization", "Content-Type"},
-		}))
-		r.Use(auth.Middleware(authService))
-
-		// Routes
-		r.Route("/api/v1", func(r chi.Router) {
-			r.Get("/hello-world", func(w http.ResponseWriter, r *http.Request) {
-				logger.Info("HTTP route reached", struct {
-					RoutePath string `json:"route_path"`
-				}{
-					RoutePath: r.URL.Path,
-				})
-
-				userInfo, found := auth.UserInfoFromRequest(r)
-				if !found {
-					http.Error(w, "Internal server error", http.StatusInternalServerError)
-					return
-				}
-
-				body, err := json.Marshal(struct {
-					Message string `json:"message"`
-				}{
-					Message: fmt.Sprintf("Hello, %s!", userInfo.ID),
-				})
-				if err != nil {
-					http.Error(w, "Internal server error", http.StatusInternalServerError)
-					return
-				}
-
-				w.Write(body)
-			})
-		})
-	})
-
-	// Web routes
-	r.Group(func(r chi.Router) {
-		// Routes
-		r.Get("/hello-world", func(w http.ResponseWriter, r *http.Request) {
-			logger.Info("HTTP route reached", struct {
-				RoutePath string `json:"route_path"`
-			}{
-				RoutePath: r.URL.Path,
-			})
-
-			w.Write([]byte("Hello, World!"))
-		})
-		r.Post("/queue-job", func(w http.ResponseWriter, r *http.Request) {
-			logger.Info("HTTP route reached", struct {
-				RoutePath string `json:"route_path"`
-			}{
-				RoutePath: r.URL.Path,
-			})
-
-			var payload struct {
-				Message string `json:"message"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				http.Error(w, "Bad request", http.StatusBadRequest)
-				return
-			}
-
-			message, err := queue.NewMessage(
-				example.QueueMessageExample,
-				payload.Message,
-			)
-			if err != nil {
-				http.Error(w, "Internal server error", http.StatusInternalServerError)
-				return
-			}
-
-			if err := queuePool.Dispatch(example.QueueExample, message); err != nil {
-				http.Error(w, "Internal server error", http.StatusInternalServerError)
-				return
-			}
-
-			w.WriteHeader(http.StatusOK)
-		})
-	})
-
-	return r
 }
 
 func newAppConf() AppConf {

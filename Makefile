@@ -12,15 +12,28 @@ stop:
 	@docker compose -f docker-compose.yaml -f docker-compose.yaml.local stop
 
 .PHONY: build
-build: build-server
+build: build-server build-worker
 
 .PHONY: build-server
 build-server:
-	@CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ./bin/server ./cmd/server/main.go
+	@if [ "${APP_ENV}" = "prod" ]; then \
+		GOMAXPROCS=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ./bin/server ./cmd/server/main.go; \
+	else \
+		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ./bin/server ./cmd/server/main.go; \
+	fi
+
+
+.PHONY: build-worker
+build-worker:
+	@if [ "${APP_ENV}" = "prod" ]; then \
+		GOMAXPROCS=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ./bin/worker ./cmd/worker/main.go; \
+	else \
+		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ./bin/worker ./cmd/worker/main.go; \
+	fi
 
 .PHONY: up
 up:
-	@docker compose -f docker-compose.yaml -f docker-compose.yaml.local up --build --remove-orphans --detach
+	@docker compose -f docker-compose.yaml -f docker-compose.yaml.local up --detach --build --remove-orphans
 
 .PHONY: down
 down:
@@ -47,7 +60,19 @@ loc:
 
 .PHONY: test
 test:
-	@go test -v ./...
+	@if docker ps -a --format '{{.Names}}' | grep -q "^${APP_NAME}.test$$"; then \
+		echo "Container '${APP_NAME}' exists. Reusing..."; \
+		docker start -a ${APP_NAME}.test; \
+else \
+        echo "Container '${APP_NAME}' does not exist. Creating..."; \
+		docker run \
+		--name ${APP_NAME}.test \
+		-v $${PWD}:/app \
+		-w /app \
+		--add-host host.docker.internal:host-gateway \
+		--env-file .env \
+		golang:1.25-alpine ash -c "go test ./..."; \
+fi
 
 .PHONY: migration-create
 migration-create:
@@ -60,13 +85,20 @@ migration-up:
 	@echo 'migrations count (enter the number of migrations to forward or leave empty to forward all migrations):' && \
 	read cmd_arg && \
 	docker run -v ${MIGRATIONS_DIR}:/migrations --add-host host.docker.internal:host-gateway migrate/migrate -source file:///migrations/ -database "postgres://$${SQL_USER}:$${SQL_PASSWORD}@$${SQL_HOST}:$${SQL_PORT}/$${SQL_DATABASE}?sslmode=disable" up $${cmd_arg}
-	
+
 .PHONY: migration-down
 migration-down:
 	@echo 'migrations count (enter the number of migrations to reverse or "--all" to reverse all migrations):' && \
 	read cmd_arg && \
 	if [ -z "$$cmd_arg" ]; then echo 'Input cannot be empty' && exit 1; fi && \
 	docker run -v ${MIGRATIONS_DIR}:/migrations --add-host host.docker.internal:host-gateway migrate/migrate -source file:///migrations/ -database "postgres://$${SQL_USER}:$${SQL_PASSWORD}@$${SQL_HOST}:$${SQL_PORT}/$${SQL_DATABASE}?sslmode=disable" down $${cmd_arg}
+
+.PHONY: migration-fix
+migration-fix:
+	@echo 'last known valid migration (enter the number of the last known migration in a valid state):' && \
+	read cmd_arg && \
+	if [ -z "$$cmd_arg" ]; then echo 'Input cannot be empty' && exit 1; fi && \
+	docker run -v ${MIGRATIONS_DIR}:/migrations --add-host host.docker.internal:host-gateway migrate/migrate -source file:///migrations/ -database "postgres://$${SQL_USER}:$${SQL_PASSWORD}@$${SQL_HOST}:$${SQL_PORT}/$${SQL_DATABASE}?sslmode=disable" force $${cmd_arg}
 
 .PHONY: gen-keys
 gen-keys:
