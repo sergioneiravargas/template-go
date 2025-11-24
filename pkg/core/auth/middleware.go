@@ -1,8 +1,18 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"strings"
+)
+
+type ctxKey string
+
+const (
+	tokenCtxKey       ctxKey = "auth_token"
+	tokenClaimsCtxKey ctxKey = "auth_token_claims"
+	userInfoCtxKey    ctxKey = "auth_user_info"
 )
 
 // Middleware for JWT based user authentication
@@ -65,4 +75,89 @@ func Middleware(
 			},
 		)
 	}
+}
+
+// Extracts the token from the given header
+func TokenFromHeader(header string) (string, error) {
+	if len(header) > 7 && strings.ToUpper(header[0:6]) == "BEARER" {
+		token := strings.Clone(header[7:])
+
+		return token, nil
+	}
+
+	return "", ErrInvalidHeader
+}
+
+// Extracts the token from the given URL query parameter
+func TokenFromQueryParam(r *http.Request) (string, error) {
+	// get token from url query param specified
+	token := r.URL.Query().Get("access_token")
+	if token == "" {
+		return "", ErrInvalidToken
+	}
+
+	return token, nil
+}
+
+// Returns a shallow copy of the request with the given token in its context
+func RequestWithToken(r *http.Request, token string) *http.Request {
+	return r.WithContext(
+		context.WithValue(
+			r.Context(),
+			tokenCtxKey,
+			token,
+		),
+	)
+}
+
+// Extracts the token from the given request's context
+func TokenFromRequest(r *http.Request) (string, bool) {
+	token, valid := r.Context().Value(tokenCtxKey).(string)
+	if !valid {
+		return "", false
+	}
+
+	return token, true
+}
+
+// Returns a shallow copy of the request with the given token claims in its context
+func RequestWithTokenClaims(r *http.Request, claims MapClaims) *http.Request {
+	return r.WithContext(
+		context.WithValue(
+			r.Context(),
+			tokenClaimsCtxKey,
+			claims,
+		),
+	)
+}
+
+// Extracts the token claims from the given request's context
+func TokenClaimsFromRequest(r *http.Request) (MapClaims, bool) {
+	claims, valid := r.Context().Value(tokenClaimsCtxKey).(MapClaims)
+	if !valid {
+		return nil, false
+	}
+
+	return claims, true
+}
+
+// Returns a shallow copy of the request with the given user information in its context
+func RequestWithUserInfo(r *http.Request, userInfo UserInfo) *http.Request {
+	return r.WithContext(
+		context.WithValue(
+			r.Context(),
+			userInfoCtxKey,
+			userInfo,
+		),
+	)
+}
+
+// Extracts the user information from the given request's context
+func UserInfoFromRequest(r *http.Request) (UserInfo, bool) {
+	userInfo, valid := r.Context().Value(userInfoCtxKey).(UserInfo)
+	if !valid {
+		return UserInfo{}, false
+	}
+
+	return userInfo, true
 }

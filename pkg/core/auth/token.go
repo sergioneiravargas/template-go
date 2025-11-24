@@ -1,16 +1,12 @@
 package auth
 
 import (
-	"context"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"math/big"
 	"net/http"
-	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -50,78 +46,6 @@ type KeySet struct {
 	Keys []Key `json:"keys"`
 }
 
-// The user information contained in the OIDC claims
-type UserInfo struct {
-	ID            string `json:"sub"`
-	GivenName     string `json:"given_name"`
-	FamilyName    string `json:"family_name"`
-	Email         string `json:"email"`
-	EmailVerified bool   `json:"email_verified"`
-}
-
-func UserInfoFromClaims(claims MapClaims) (*UserInfo, error) {
-	var userInfo UserInfo
-
-	sub, valid := claims["sub"].(string)
-	if !valid {
-		return nil, fmt.Errorf("invalid claim sub")
-	}
-	userInfo.ID = sub
-
-	givenName, valid := claims["given_name"].(string)
-	if valid {
-		userInfo.GivenName = givenName
-	}
-
-	familyName, valid := claims["family_name"].(string)
-	if valid {
-		userInfo.FamilyName = familyName
-	}
-
-	email, valid := claims["email"].(string)
-	if valid {
-		userInfo.Email = email
-	}
-
-	emailVerified, _ := claims["email_verified"].(bool)
-	if valid {
-		userInfo.EmailVerified = emailVerified
-	}
-
-	return &userInfo, nil
-}
-
-// Fetches UserInfo from the given URL
-func FetchUserInfo(
-	url string,
-	accessToken string,
-) (*UserInfo, error) {
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Add("Authorization", "Bearer "+accessToken)
-
-	httpClient := &http.Client{}
-	res, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	var userInfo UserInfo
-	if err := json.Unmarshal(body, &userInfo); err != nil {
-		return nil, err
-	}
-
-	return &userInfo, nil
-}
-
 // Fetches the key set from the given URL
 func FetchKeySet(url string) (KeySet, error) {
 	res, err := http.Get(url)
@@ -136,28 +60,6 @@ func FetchKeySet(url string) (KeySet, error) {
 	}
 
 	return keySet, nil
-}
-
-// Extracts the token from the given header
-func TokenFromHeader(header string) (string, error) {
-	if len(header) > 7 && strings.ToUpper(header[0:6]) == "BEARER" {
-		token := strings.Clone(header[7:])
-
-		return token, nil
-	}
-
-	return "", ErrInvalidHeader
-}
-
-// Extracts the token from the given URL query parameter
-func TokenFromQueryParam(r *http.Request) (string, error) {
-	// get token from url query param specified
-	token := r.URL.Query().Get("access_token")
-	if token == "" {
-		return "", ErrInvalidToken
-	}
-
-	return token, nil
 }
 
 // Parses the token using the given RSA public key
@@ -235,77 +137,6 @@ func LoadPublicKeyFromJKWS(key Key) (*rsa.PublicKey, error) {
 		N: big.NewInt(0).SetBytes(nb),
 		E: int(big.NewInt(0).SetBytes(eb).Int64()),
 	}, nil
-}
-
-type ctxKey uint
-
-const (
-	tokenCtxKey ctxKey = iota
-	tokenClaimsCtxKey
-	userInfoCtxKey
-)
-
-// Returns a shallow copy of the request with the given token in its context
-func RequestWithToken(r *http.Request, token string) *http.Request {
-	return r.WithContext(
-		context.WithValue(
-			r.Context(),
-			tokenCtxKey,
-			token,
-		),
-	)
-}
-
-// Extracts the token from the given request's context
-func TokenFromRequest(r *http.Request) (string, bool) {
-	token, valid := r.Context().Value(tokenCtxKey).(string)
-	if !valid {
-		return "", false
-	}
-
-	return token, true
-}
-
-// Returns a shallow copy of the request with the given token claims in its context
-func RequestWithTokenClaims(r *http.Request, claims MapClaims) *http.Request {
-	return r.WithContext(
-		context.WithValue(
-			r.Context(),
-			tokenClaimsCtxKey,
-			claims,
-		),
-	)
-}
-
-// Extracts the token claims from the given request's context
-func TokenClaimsFromRequest(r *http.Request) (MapClaims, bool) {
-	claims, valid := r.Context().Value(tokenClaimsCtxKey).(MapClaims)
-	if !valid {
-		return nil, false
-	}
-
-	return claims, true
-}
-
-// Returns a shallow copy of the request with the given user information in its context
-func RequestWithUserInfo(r *http.Request, userInfo UserInfo) *http.Request {
-	return r.WithContext(
-		context.WithValue(
-			r.Context(),
-			userInfoCtxKey,
-			userInfo,
-		),
-	)
-}
-
-// Extracts the user information from the given request's context
-func UserInfoFromRequest(r *http.Request) (UserInfo, bool) {
-	userInfo, valid := r.Context().Value(userInfoCtxKey).(UserInfo)
-	if !valid {
-		return UserInfo{}, false
-	}
-
-	return userInfo, true
 }
 
 // Loads the RSA private key from the given data
