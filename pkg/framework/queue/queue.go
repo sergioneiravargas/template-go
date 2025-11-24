@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/sergioneiravargas/template-go/pkg/framework/log"
+	"github.com/sergioneiravargas/template-go/pkg/framework/sql"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -18,6 +19,8 @@ const (
 	amqpExchange        string = "queue.messages"
 	amqpDelayedExchange string = "queue.messages.delayed"
 	MaxRetries          int    = 3 // Default maximum number of retries for a message
+
+	defaultOutboxBatchLimit = 10
 )
 
 type MessageOption func(*Message)
@@ -143,6 +146,7 @@ func New(
 	handlers []*MessageHandler,
 	amqpConn *amqp.Connection,
 	logger *log.Logger,
+	opts ...func(*Queue),
 ) *Queue {
 	ch, err := amqpConn.Channel()
 	if err != nil {
@@ -220,7 +224,7 @@ func New(
 		panic(fmt.Errorf("failed to bind queue to delayed exchange: %w", err))
 	}
 
-	return &Queue{
+	q := Queue{
 		name:         name,
 		handlers:     handlers,
 		amqpConn:     amqpConn,
@@ -228,6 +232,15 @@ func New(
 		workerCount:  1,
 		shutdownChan: make(chan struct{}),
 	}
+	for _, opt := range opts {
+		opt(&q)
+	}
+
+	return &q
+}
+
+func (q *Queue) GetName() string {
+	return q.name
 }
 
 func (q *Queue) Shutdown() error {
@@ -246,25 +259,66 @@ func (q *Queue) Shutdown() error {
 	return nil
 }
 
-type Pool []*Queue
+func PoolWithDB(
+	db *sql.DB,
+) func(*Pool) {
+	return func(p *Pool) {
+		p.db = db
+	}
+}
+
+func PoolWitOutboxBatchLimit(
+	limit int,
+) func(*Pool) {
+	return func(p *Pool) {
+		p.outboxBatchLimit = limit
+	}
+}
+
+type Pool struct {
+	queues []*Queue
+	// Optional database connection for outbox message processing
+	db     *sql.DB
+	logger *log.Logger
+
+	outboxBatchLimit int
+}
 
 func NewPool(
-	queues ...*Queue,
+	db *sql.DB,
+	logger *log.Logger,
+	queues []*Queue,
+	opts ...func(*Pool),
 ) *Pool {
-	p := Pool(queues)
+	if logger == nil {
+		panic("logger is required")
+	}
+	if len(queues) == 0 {
+		panic("at least one queue is required")
+	}
+
+	p := Pool{
+		queues:           queues,
+		db:               db,
+		logger:           logger,
+		outboxBatchLimit: defaultOutboxBatchLimit,
+	}
+	for _, opt := range opts {
+		opt(&p)
+	}
 	return &p
 }
 
-func (p *Pool) AddQueue(q *Queue) {
-	*p = append(*p, q)
+func (p *Pool) AddQueue(queues ...*Queue) {
+	p.queues = append(p.queues, queues...)
 }
 
 func (p *Pool) GetQueues() []*Queue {
-	return []*Queue(*p)
+	return p.queues
 }
 
 func (p *Pool) FindQueue(name string) *Queue {
-	for _, q := range *p {
+	for _, q := range p.queues {
 		if q.name == name {
 			return q
 		}
@@ -295,10 +349,24 @@ func (p *Pool) Shutdown() error {
 
 func (p *Pool) Work() {
 	var wg sync.WaitGroup
+	// Start outbox consumers if db is provided
+	if p.db != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.logger.Info("Starting outbox message consume", nil)
+			ConsumeOutboxMessages(p.db, p, p.logger, p.outboxBatchLimit)
+		}()
+	}
+
+	// Start workers for each queue
 	for _, q := range p.GetQueues() {
 		wg.Add(1)
 		go func(q *Queue) {
 			defer wg.Done()
+			p.logger.Info("Starting queue work", map[string]any{
+				"queue": q.name,
+			})
 			q.Work()
 		}(q)
 	}

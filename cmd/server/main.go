@@ -96,6 +96,7 @@ func newHTTPServer(
 func newHTTPHandler(
 	appConf AppConf,
 	logger *log.Logger,
+	db *sql.DB,
 	queuePool *queue.Pool,
 	authService *auth.Service,
 ) http.Handler {
@@ -151,44 +152,43 @@ func newHTTPHandler(
 	r.Group(func(r chi.Router) {
 		// Routes
 		r.Get("/hello-world", func(w http.ResponseWriter, r *http.Request) {
-			logger.Info("HTTP route reached", struct {
-				RoutePath string `json:"route_path"`
-			}{
-				RoutePath: r.URL.Path,
-			})
-
 			w.Write([]byte("Hello, World!"))
 		})
 		r.Post("/queue-job", func(w http.ResponseWriter, r *http.Request) {
-			logger.Info("HTTP route reached", struct {
-				RoutePath string `json:"route_path"`
-			}{
-				RoutePath: r.URL.Path,
-			})
-
 			var payload struct {
 				Message string `json:"message"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				logger.Error("Failed to decode request payload", map[string]any{
+					"error": err.Error(),
+				})
 				http.Error(w, "Bad request", http.StatusBadRequest)
 				return
 			}
 
-			message, err := queue.NewMessage(
-				example.QueueMessageExample,
-				payload.Message,
-			)
+			input := example.CreateLogInput{
+				Message: payload.Message,
+			}
+			if err := input.Validate(); err != nil {
+				http.Error(w, "Bad request: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+
+			log, err := example.CreateLog(db, input)
+			if err != nil {
+				logger.Error("Failed to create log", map[string]any{
+					"error": err.Error(),
+				})
+				http.Error(w, "Internal server error", http.StatusInternalServerError)
+				return
+			}
+
+			resp, err := json.Marshal(log)
 			if err != nil {
 				http.Error(w, "Internal server error", http.StatusInternalServerError)
 				return
 			}
-
-			if err := queuePool.Dispatch(example.QueueExample, message); err != nil {
-				http.Error(w, "Internal server error", http.StatusInternalServerError)
-				return
-			}
-
-			w.WriteHeader(http.StatusOK)
+			w.Write(resp)
 		})
 	})
 
@@ -243,6 +243,7 @@ func newAMQPConn() *amqp.Connection {
 }
 
 func newQueuePool(
+	db *sql.DB,
 	conn *amqp.Connection,
 	logger *log.Logger,
 ) *queue.Pool {
@@ -252,8 +253,14 @@ func newQueuePool(
 		panic(err)
 	}
 
+	queueWorkerCount := 4
+
 	return queue.NewPool(
-		example.NewQueue(logger, conn),
+		db,
+		logger,
+		[]*queue.Queue{
+			example.NewQueue(queueWorkerCount, logger, conn),
+		},
 	)
 }
 

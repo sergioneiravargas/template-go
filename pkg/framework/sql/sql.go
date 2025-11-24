@@ -8,6 +8,7 @@ import (
 )
 
 type DB = sql.DB
+type Tx = sql.Tx
 
 type Conf struct {
 	Host     string

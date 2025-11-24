@@ -384,7 +384,7 @@ func TestPoolParallelWorkerExecution(t *testing.T) {
 	)
 
 	// Create a pool with the queue
-	pool := queue.NewPool(q)
+	pool := queue.NewPool(nil, logger, []*queue.Queue{q})
 
 	// Dispatch messages with different names
 	for i, messageName := range []string{testMessage1Name, testMessage2Name, testMessage3Name} {
@@ -469,7 +469,7 @@ func TestPoolShutdown(t *testing.T) {
 		logger,
 	)
 
-	pool := queue.NewPool(q)
+	pool := queue.NewPool(nil, logger, []*queue.Queue{q})
 
 	// Dispatch messages with different names
 	for _, messageName := range []string{testMessage1Name, testMessage2Name} {
@@ -546,7 +546,7 @@ func TestPoolWorkWithMultipleMessagesPerQueue(t *testing.T) {
 		logger,
 	)
 
-	pool := queue.NewPool(q)
+	pool := queue.NewPool(nil, logger, []*queue.Queue{q})
 
 	// Dispatch multiple messages
 	for i := 0; i < totalMessages; i++ {

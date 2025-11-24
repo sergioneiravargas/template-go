@@ -1,7 +1,8 @@
 package example
 
 import (
-	"time"
+	"encoding/json"
+	"fmt"
 
 	"github.com/sergioneiravargas/template-go/pkg/framework/log"
 	"github.com/sergioneiravargas/template-go/pkg/framework/queue"
@@ -10,11 +11,12 @@ import (
 )
 
 const (
-	QueueExample        = "queue_example"
-	QueueMessageExample = "example_message"
+	QueueExample           = "queue_example"
+	QueueMessageLogCreated = "example_log_created"
 )
 
 func NewQueue(
+	workerCount int,
 	logger *log.Logger,
 	conn *amqp.Connection,
 ) *queue.Queue {
@@ -25,25 +27,33 @@ func NewQueue(
 		panic("logger is nil")
 	}
 
+	if workerCount <= 0 {
+		panic("worker count must be greater than 0")
+	}
+
 	return queue.New(
 		QueueExample,
 		[]*queue.MessageHandler{
-			&queue.MessageHandler{
+			{
 				CanHandleFunc: func(msg *queue.Message) bool {
 					// Logic to determine if this handler can process the message
-					return msg.Name == QueueMessageExample
+					return msg.Name == QueueMessageLogCreated
 				},
 				HandlerFunc: func(msg *queue.Message) error {
 					// Logic to process the message
-					logger.Info("Processing example message", map[string]any{
-						"message_body": string(msg.Body),
+					var log Log
+					if err := json.Unmarshal(msg.Body, &log); err != nil {
+						return fmt.Errorf("failed to decode message payload: %w", err)
+					}
+					logger.Info("Processing example log created message", map[string]any{
+						"log": log,
 					})
-					time.Sleep(2 * time.Second) // Simulate processing time
 					return nil
 				},
 			},
 		},
 		conn,
 		logger,
+		queue.WithWorkerCount(workerCount),
 	)
 }

@@ -117,6 +117,7 @@ func newAMQPConn() *amqp.Connection {
 }
 
 func newQueuePool(
+	db *sql.DB,
 	conn *amqp.Connection,
 	logger *log.Logger,
 ) *queue.Pool {
@@ -126,8 +127,14 @@ func newQueuePool(
 		panic(err)
 	}
 
+	queueWorkerCount := 4
+
 	return queue.NewPool(
-		example.NewQueue(logger, conn),
+		db,
+		logger,
+		[]*queue.Queue{
+			example.NewQueue(queueWorkerCount, logger, conn),
+		},
 	)
 }
 
