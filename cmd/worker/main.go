@@ -2,20 +2,19 @@ package main
 
 import (
 	"context"
-	"crypto/rsa"
 	"fmt"
 	"os"
 	"slices"
-	"time"
+	"strconv"
 
-	"github.com/sergioneiravargas/template-go/pkg/core/auth"
-	"github.com/sergioneiravargas/template-go/pkg/core/example"
-	"github.com/sergioneiravargas/template-go/pkg/framework/cache"
-	"github.com/sergioneiravargas/template-go/pkg/framework/log"
-	"github.com/sergioneiravargas/template-go/pkg/framework/queue"
-	"github.com/sergioneiravargas/template-go/pkg/framework/sql"
+	"github.com/sergioneiravargas/template-go/internal/example"
+	"github.com/sergioneiravargas/template-go/internal/platform/amqpx"
+	"github.com/sergioneiravargas/template-go/internal/platform/debug"
+	"github.com/sergioneiravargas/template-go/internal/platform/log"
+	"github.com/sergioneiravargas/template-go/internal/platform/queue"
+	"github.com/sergioneiravargas/template-go/internal/platform/sql"
+	"github.com/sergioneiravargas/template-go/internal/platform/websocket"
 
-	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/fx"
 )
 
@@ -28,34 +27,63 @@ func main() {
 			newSQLDB,
 			newAMQPConn,
 			newQueuePool,
-			newAuthConf,
-			newAuthService,
+			newWebsocketHub,
+			example.NewRepository,
+			newExampleService,
 		),
-		fx.Invoke(configureLifecycleHooks),
+		fx.Invoke(setupQueuePool),
+		fx.Invoke(configureWorkerLifecycleHooks),
 		fx.NopLogger,
 	)
 
 	app.Run()
 }
 
-func configureLifecycleHooks(
+func configureWorkerLifecycleHooks(
 	lc fx.Lifecycle,
-	db *sql.DB,
-	amqpConn *amqp.Connection,
+	hub *websocket.Hub,
 	pool *queue.Pool,
+	db *sql.DB,
+	amqpConn *amqpx.ConnectionManager,
 ) {
+	// workCtx is the root context for queue handlers and outbox consumers. It is
+	// cancelled on stop AFTER the graceful drain, so in-flight handlers finish
+	// under the fx stop deadline instead of being cut short.
+	workCtx, cancelWork := context.WithCancel(context.Background())
+	workDone := make(chan struct{})
+
 	lc.Append(fx.Hook{
 		OnStart: func(context.Context) error {
-			go pool.Work()
+			go func() {
+				defer close(workDone)
+				pool.Work(workCtx)
+			}()
+			if enabled, _ := strconv.ParseBool(os.Getenv("APP_PROFILER_ENABLED")); enabled {
+				debug.StartPProfServer(":6060")
+			}
 			return nil
 		},
-		OnStop: func(context.Context) error {
-			if err := pool.Shutdown(); err != nil {
+		OnStop: func(ctx context.Context) error {
+			// Stop fetching and wait for in-flight handlers, bounded by the
+			// fx stop deadline carried in ctx.
+			if err := pool.Shutdown(ctx); err != nil {
+				return err
+			}
+			// Stop outbox consumers (and hard-cancel any straggler).
+			cancelWork()
+			select {
+			case <-workDone:
+			case <-ctx.Done():
+				return fmt.Errorf("timed out waiting for pool work to stop: %w", ctx.Err())
+			}
+			if err := hub.Close(); err != nil {
 				return err
 			}
 			if err := amqpConn.Close(); err != nil {
 				return err
 			}
+			// Close the DB only after every consumer has stopped so no
+			// transaction is cut off mid-flight.
 			if err := db.Close(); err != nil {
 				return err
 			}
@@ -92,12 +120,21 @@ func newAppConf() AppConf {
 }
 
 func newSQLConf() sql.Conf {
+	var maxPoolConn int
+	var err error
+	if os.Getenv("SQL_MAX_POOL_CONN") != "" {
+		maxPoolConn, err = strconv.Atoi(os.Getenv("SQL_MAX_POOL_CONN"))
+		if err != nil {
+			panic(err)
+		}
+	}
 	return sql.Conf{
-		Host:     os.Getenv("SQL_HOST"),
-		Port:     os.Getenv("SQL_PORT"),
-		User:     os.Getenv("SQL_USER"),
-		Password: os.Getenv("SQL_PASSWORD"),
-		Name:     os.Getenv("SQL_DATABASE"),
+		Host:        os.Getenv("SQL_HOST"),
+		Port:        os.Getenv("SQL_PORT"),
+		Name:        os.Getenv("SQL_DATABASE"),
+		User:        os.Getenv("SQL_USER"),
+		Password:    os.Getenv("SQL_PASSWORD"),
+		MaxPoolConn: maxPoolConn,
 	}
 }
 
@@ -107,35 +144,63 @@ func newSQLDB(
 	return sql.NewDB(conf)
 }
 
-func newAMQPConn() *amqp.Connection {
-	amqpURL := fmt.Sprintf("amqp://%s:%s@%s:%s/", os.Getenv("AMQP_USER"), os.Getenv("AMQP_PASSWORD"), os.Getenv("AMQP_HOST"), os.Getenv("AMQP_PORT"))
-	conn, err := amqp.Dial(amqpURL)
+func newAMQPConn(sd fx.Shutdowner, logger *log.Logger) *amqpx.ConnectionManager {
+	cfg := amqpx.Config{
+		URL: fmt.Sprintf("amqp://%s:%s@%s:%s/", os.Getenv("AMQP_USER"), os.Getenv("AMQP_PASSWORD"), os.Getenv("AMQP_HOST"), os.Getenv("AMQP_PORT")),
+	}
+	manager, err := amqpx.New(cfg, amqpx.NewAMQPDialer(cfg), logger, amqpx.WithOnGiveUp(func() {
+		logger.Error("AMQP connection unrecoverable; shutting down for restart", nil)
+		_ = sd.Shutdown(fx.ExitCode(1))
+	}))
 	if err != nil {
 		panic(err)
 	}
-	return conn
+	return manager
 }
 
 func newQueuePool(
 	db *sql.DB,
-	conn *amqp.Connection,
+	conn *amqpx.ConnectionManager,
 	logger *log.Logger,
 ) *queue.Pool {
-	amqpURL := fmt.Sprintf("amqp://%s:%s@%s:%s/", os.Getenv("AMQP_USER"), os.Getenv("AMQP_PASSWORD"), os.Getenv("AMQP_HOST"), os.Getenv("AMQP_PORT"))
-	conn, err := amqp.Dial(amqpURL)
-	if err != nil {
-		panic(err)
-	}
-
-	queueWorkerCount := 4
-
+	const workerCount = 4
 	return queue.NewPool(
 		db,
 		logger,
 		[]*queue.Queue{
-			example.NewQueue(queueWorkerCount, logger, conn),
+			example.NewQueue(workerCount, logger, conn),
 		},
 	)
+}
+
+// setupQueuePool attaches the message handlers after construction: handlers
+// need the service, and the service is built after the pool.
+func setupQueuePool(
+	service *example.Service,
+	pool *queue.Pool,
+	logger *log.Logger,
+) {
+	exampleQueue := pool.FindQueue(example.QueueName)
+	if exampleQueue == nil {
+		panic("example queue not found in pool during setup")
+	}
+	queue.WithMessageHandlers(
+		example.MessageHandlers(service, logger)...,
+	)(exampleQueue)
+}
+
+func newWebsocketHub(
+	conn *amqpx.ConnectionManager,
+) *websocket.Hub {
+	return websocket.NewHub(conn)
+}
+
+func newExampleService(
+	repository *example.Repository,
+	hub *websocket.Hub,
+	logger *log.Logger,
+) *example.Service {
+	return example.NewService(repository, hub, logger)
 }
 
 func newLogger(
@@ -146,57 +211,5 @@ func newLogger(
 	return log.NewLogger(
 		appConf.Name,
 		handler,
-	)
-}
-
-func newAuthConf() auth.Conf {
-	authKeySet, err := auth.FetchKeySet(os.Getenv("AUTH_KEYSET_URL"))
-	if err != nil {
-		panic(err)
-	}
-	authUserInfoURL := os.Getenv("AUTH_USERINFO_URL")
-
-	authPrivateKeyBytes, err := os.ReadFile(os.Getenv("AUTH_PRIVATE_KEY_FILE"))
-	if err != nil {
-		panic(err)
-	}
-	authPrivateKey, err := auth.LoadPrivateKeyFromPEM(authPrivateKeyBytes)
-	if err != nil {
-		panic(err)
-	}
-
-	authPublicKeyBytes, err := os.ReadFile(os.Getenv("AUTH_PUBLIC_KEY_FILE"))
-	if err != nil {
-		panic(err)
-	}
-	authPublicKey, err := auth.LoadPublicKeyFromPEM(authPublicKeyBytes)
-	if err != nil {
-		panic(err)
-	}
-
-	return auth.Conf{
-		KeySet:      authKeySet,
-		UserInfoURL: authUserInfoURL,
-		PEMCertificate: struct {
-			Private *rsa.PrivateKey
-			Public  *rsa.PublicKey
-		}{
-			Private: authPrivateKey,
-			Public:  authPublicKey,
-		},
-	}
-}
-
-func newAuthService(
-	conf auth.Conf,
-) *auth.Service {
-	userInfoCache := cache.New[string, *auth.UserInfo](
-		cache.WithTTL[string, *auth.UserInfo](10*time.Minute),
-		cache.WithCleanupInterval[string, *auth.UserInfo](30*time.Second),
-	)
-
-	return auth.NewService(
-		conf,
-		auth.ServiceWithUserInfoCache(userInfoCache),
 	)
 }

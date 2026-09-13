@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Example websocket client</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 60rem; }
+    label { display: block; margin-top: .75rem; font-size: .9rem; }
+    input { width: 100%; box-sizing: border-box; padding: .4rem; }
+    button { margin: .5rem .25rem 0 0; padding: .4rem .8rem; }
+    pre { background: #111; color: #eee; padding: 1rem; height: 20rem; overflow: auto; font-size: .8rem; }
+    #status { font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>Example websocket client</h1>
+  <p>Connects to <code>/ws/rooms/{room}</code> on this host. Room <code>messages</code> also receives <code>message_created</code> events from the worker.</p>
+
+  <label>Access token <input id="token" placeholder="JWT"></label>
+  <label>Room <input id="room" value="messages"></label>
+  <div>
+    <button id="connect">Connect</button>
+    <button id="disconnect" disabled>Disconnect</button>
+    <span id="status">disconnected</span>
+  </div>
+
+  <label>Message <input id="message" placeholder="hello"></label>
+  <div>
+    <button id="ping" disabled>Ping</button>
+    <button id="echo" disabled>Echo</button>
+    <button id="broadcast" disabled>Broadcast</button>
+    <button id="clear">Clear log</button>
+  </div>
+
+  <pre id="log"></pre>
+
+  <script>
+    let socket = null;
+    const $ = (id) => document.getElementById(id);
+    const log = (prefix, text) => {
+      $('log').textContent += `[${new Date().toISOString()}] ${prefix} ${text}\n`;
+      $('log').scrollTop = $('log').scrollHeight;
+    };
+    const setConnected = (connected) => {
+      $('status').textContent = connected ? 'connected' : 'disconnected';
+      $('connect').disabled = connected;
+      for (const id of ['disconnect', 'ping', 'echo', 'broadcast']) $(id).disabled = !connected;
+    };
+    const send = (type, data) => {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      const frame = JSON.stringify({ id: crypto.randomUUID(), type, data });
+      socket.send(frame);
+      log('>>', frame);
+    };
+
+    $('connect').onclick = () => {
+      const token = encodeURIComponent($('token').value.trim());
+      const room = encodeURIComponent($('room').value.trim());
+      const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+      const url = `${scheme}://${location.host}/ws/rooms/${room}?access_token=${token}`;
+      socket = new WebSocket(url);
+      socket.onopen = () => { setConnected(true); log('--', `open ${url.replace(/access_token=.*/, 'access_token=***')}`); };
+      socket.onmessage = (event) => log('<<', event.data);
+      socket.onerror = () => log('--', 'error (see browser console)');
+      socket.onclose = (event) => { setConnected(false); log('--', `close code=${event.code} reason=${event.reason || '-'}`); socket = null; };
+    };
+    $('disconnect').onclick = () => socket && socket.close(1000, 'client closed');
+    $('ping').onclick = () => send('ping', null);
+    $('echo').onclick = () => send('echo', { message: $('message').value });
+    $('broadcast').onclick = () => send('broadcast', { message: $('message').value });
+    $('clear').onclick = () => { $('log').textContent = ''; };
+  </script>
+</body>
+</html>

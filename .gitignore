@@ -3,3 +3,4 @@ docker-compose.yaml.local
 bin/*
 private.pem
 public.pem
+coverage.out

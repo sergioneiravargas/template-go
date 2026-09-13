@@ -42,21 +42,22 @@ func main() {
 			newAuthService,
 			example.NewRepository,
 			newExampleService,
+			newWebsocketUpgrader,
 			newHTTPHandler,
 			newHTTPServer,
 		),
 		fx.Invoke(setupQueuePool),
-		fx.Invoke(configureLifecycleHooks),
+		fx.Invoke(configureServerLifecycleHooks),
+		fx.Invoke(configureBroadcastLifecycleHooks),
 		fx.NopLogger,
 	)
 
 	app.Run()
 }
 
-func configureLifecycleHooks(
+func configureServerLifecycleHooks(
 	lc fx.Lifecycle,
 	server *http.Server,
-	hub *websocket.Hub,
 	pool *queue.Pool,
 	db *sql.DB,
 	amqpConn *amqpx.ConnectionManager,
@@ -75,12 +76,10 @@ func configureLifecycleHooks(
 		},
 		OnStop: func(ctx context.Context) error {
 			// ctx carries the fx stop deadline; every teardown step honors it.
-			// Order: stop accepting traffic, drop sockets, drain jobs, then
-			// tear down the transports they depend on.
+			// fx runs OnStop hooks in reverse registration order, so the
+			// broadcast hook below has already closed the hub (and its client
+			// sockets) by the time this one tears down AMQP and the DB.
 			if err := server.Shutdown(ctx); err != nil {
-				return err
-			}
-			if err := hub.Close(); err != nil {
 				return err
 			}
 			if err := pool.Shutdown(ctx); err != nil {
@@ -93,6 +92,62 @@ func configureLifecycleHooks(
 				return err
 			}
 			return nil
+		},
+	})
+}
+
+func configureBroadcastLifecycleHooks(
+	lc fx.Lifecycle,
+	hub *websocket.Hub,
+	logger *log.Logger,
+) {
+	// bctx cancels the broadcast consumer on stop; done reports that it exited.
+	bctx, cancelBroadcast := context.WithCancel(context.Background())
+	done := make(chan struct{})
+
+	lc.Append(fx.Hook{
+		OnStart: func(context.Context) error {
+			go func() {
+				defer close(done)
+				// At most this many broadcasts are fanned out concurrently;
+				// the hub also uses it as the broker prefetch.
+				const maxBroadcastConcurrency = 4
+				for {
+					err := hub.ConsumeMessages(bctx, maxBroadcastConcurrency, logger, func(message websocket.Message) {
+						if err := hub.BroadcastMessage(message); err != nil {
+							logger.Error("Error broadcasting message", log.Context{
+								"error": err.Error(),
+								"topic": message.Topic,
+							})
+						}
+					})
+					if bctx.Err() != nil {
+						return
+					}
+					logger.Error("Broadcast subscription lost, resubscribing", log.Context{
+						"error": err.Error(),
+					})
+					// Back off before resubscribing so a persistent failure
+					// (e.g. the AMQP connection is reconnecting) does not spin
+					// in a tight loop flooding logs.
+					select {
+					case <-bctx.Done():
+						return
+					case <-time.After(time.Second):
+					}
+				}
+			}()
+
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			cancelBroadcast()
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return fmt.Errorf("timed out waiting for broadcast consumer to stop: %w", ctx.Err())
+			}
+			return hub.Close()
 		},
 	})
 }
@@ -128,12 +183,11 @@ func newHTTPServer(
 	handler http.Handler,
 ) *http.Server {
 	return &http.Server{
-		Addr:              ":3000",
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		Addr:         ":3000",
+		Handler:      handler,
+		ReadTimeout:  5 * time.Second, // handshake only
+		WriteTimeout: 5 * time.Second, // handshake only
+		IdleTimeout:  0,               // keep connection alive indefinitely
 	}
 }
 
@@ -142,6 +196,8 @@ func newHTTPHandler(
 	logger *log.Logger,
 	authService *auth.Service,
 	exampleService *example.Service,
+	upgrader *websocket.Upgrader,
+	hub *websocket.Hub,
 ) http.Handler {
 	r := chi.NewRouter()
 
@@ -151,40 +207,39 @@ func newHTTPHandler(
 	r.Use(middleware.RealIP)
 	r.Use(log.Middleware(appConf.Name, appConf.Env))
 
-	// API routes
+	// Websocket routes
 	r.Group(func(r chi.Router) {
 		// Middlewares
 		r.Use(cors.Handler(cors.Options{
 			AllowedOrigins: []string{"*"},
-			AllowedMethods: []string{"HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS"},
+			AllowedMethods: []string{"HEAD", "GET", "OPTIONS"},
 			AllowedHeaders: []string{"Accept", "Authorization", "Content-Type"},
 		}))
+		// Browsers cannot set headers on the handshake: the token travels
+		// in the access_token query parameter (see auth.Middleware).
+		r.Use(auth.Middleware(authService))
 
 		// Routes
-		r.Route("/api/v1", func(r chi.Router) {
-			// Public routes: none yet.
-
-			// Private routes
-			r.Group(func(r chi.Router) {
-				r.Use(auth.Middleware(authService))
-
-				r.Get("/hello-world", example.HelloWorldAPIHandler(logger))
-				r.Post("/messages", example.CreateMessageAPIHandler(logger, exampleService))
-				r.Get("/messages/{id}", example.GetMessageAPIHandler(logger, exampleService))
-				r.Post("/rooms/{room}/broadcast", example.BroadcastRoomAPIHandler(logger, exampleService))
-			})
+		r.Route("/ws", func(r chi.Router) {
+			r.Get("/rooms/{room}", example.NewRoomWebsocketHandler(upgrader, hub, exampleService, logger))
 		})
 	})
 
 	// Web routes
 	r.Group(func(r chi.Router) {
 		// Routes
-		r.Get("/hello-world", func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte("Hello, World!"))
-		})
+		r.Get("/ws-client", example.WebsocketClientHandler())
 	})
 
 	return r
+}
+
+func newWebsocketUpgrader() *websocket.Upgrader {
+	return &websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			return true // Allow all origins (adjust for security)
+		},
+	}
 }
 
 func newSQLConf() sql.Conf {

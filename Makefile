@@ -12,7 +12,7 @@ stop:
 	@docker compose -f docker-compose.yaml -f docker-compose.yaml.local stop
 
 .PHONY: build
-build: build-server build-worker
+build: build-server build-socket-server build-worker
 
 .PHONY: build-server
 build-server:
@@ -22,6 +22,13 @@ build-server:
 		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ./bin/server ./cmd/server/main.go; \
 	fi
 
+.PHONY: build-socket-server
+build-socket-server:
+	@if [ "${APP_ENV}" = "prod" ]; then \
+		GOMAXPROCS=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ./bin/socket-server ./cmd/socket-server/main.go; \
+	else \
+		CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o ./bin/socket-server ./cmd/socket-server/main.go; \
+	fi
 
 .PHONY: build-worker
 build-worker:
@@ -58,6 +65,19 @@ stats:
 loc:
 	@find ./ -name '*.go' | xargs wc -l | tail -1
 
+.PHONY: fmt
+fmt:
+	@go fmt ./...
+
+.PHONY: vet
+vet:
+	@go vet ./...
+
+.PHONY: check
+check: fmt vet build test
+	@./scripts/check-gate.sh record
+	@echo 'check: all green'
+
 .PHONY: test
 test:
 	@if docker ps -a --format '{{.Names}}' | grep -q "^${APP_NAME}.test$$"; then \
@@ -71,7 +91,7 @@ else \
 		-w /app \
 		--add-host host.docker.internal:host-gateway \
 		--env-file .env \
-		golang:1.25-alpine ash -c "go test ./..."; \
+		golang:1.25-alpine ash -c "go test -coverprofile=coverage.out -count=1 ./..."; \
 fi
 
 .PHONY: migration-create
@@ -104,6 +124,10 @@ migration-fix:
 gen-keys:
 	@openssl genpkey -algorithm RSA -out private.pem -pkeyopt rsa_keygen_bits:2048 && \
 	openssl rsa -in private.pem -pubout -out public.pem
+
+.PHONY: profile-local
+profile-local:
+	@./scripts/pprof-report.sh
 
 # Don't forget to run this command before making any changes to the project
 .PHONY: init

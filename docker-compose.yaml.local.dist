@@ -1,11 +1,23 @@
 services:
   server:
+    ports:
+      - "6060:6060"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./private.pem:/private.pem
+      - ./public.pem:/public.pem
+  socket-server:
+    ports:
+      - "6070:6060"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./private.pem:/private.pem
       - ./public.pem:/public.pem
   worker:
+    ports:
+      - "6080:6060"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

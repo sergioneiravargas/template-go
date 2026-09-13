@@ -7,9 +7,22 @@ services:
       dockerfile: ./docker/server/Dockerfile
     restart: unless-stopped
     expose:
-      - "3000" 
+      - "3000"
     ports:
       - "3000:3000"
+    env_file:
+      - .env
+
+  socket-server:
+    container_name: ${APP_NAME}.socket-server
+    build:
+      context: .
+      dockerfile: ./docker/socket-server/Dockerfile
+    restart: unless-stopped
+    expose:
+      - "3100"
+    ports:
+      - "3100:3000"
     env_file:
       - .env
 
