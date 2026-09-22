@@ -15,7 +15,6 @@ import (
 	"github.com/sergioneiravargas/template-go/internal/platform/amqpx"
 	"github.com/sergioneiravargas/template-go/internal/platform/cache"
 	"github.com/sergioneiravargas/template-go/internal/platform/debug"
-	"github.com/sergioneiravargas/template-go/internal/platform/httpfetch"
 	"github.com/sergioneiravargas/template-go/internal/platform/log"
 	"github.com/sergioneiravargas/template-go/internal/platform/queue"
 	"github.com/sergioneiravargas/template-go/internal/platform/sql"
@@ -32,13 +31,13 @@ func main() {
 		fx.Provide(
 			newAppConf,
 			newLogger,
-			newHTTPFetcher,
 			newSQLConf,
 			newSQLDB,
 			newAMQPConn,
 			newQueuePool,
 			newWebsocketHub,
 			newAuthConf,
+			auth.NewRepository,
 			newAuthService,
 			example.NewRepository,
 			newExampleService,
@@ -337,19 +336,7 @@ func newLogger(
 	)
 }
 
-func newHTTPFetcher(logger *log.Logger) httpfetch.Fetcher {
-	return httpfetch.NewClient(logger)
-}
-
-func newAuthConf(
-	fetcher httpfetch.Fetcher,
-) auth.Conf {
-	authKeySet, err := auth.FetchKeySet(context.Background(), fetcher, os.Getenv("AUTH_KEYSET_URL"))
-	if err != nil {
-		panic(err)
-	}
-	authUserInfoURL := os.Getenv("AUTH_USERINFO_URL")
-
+func newAuthConf() auth.Conf {
 	authPrivateKeyBytes, err := os.ReadFile(os.Getenv("AUTH_PRIVATE_KEY_FILE"))
 	if err != nil {
 		panic(err)
@@ -369,8 +356,6 @@ func newAuthConf(
 	}
 
 	return auth.Conf{
-		KeySet:      authKeySet,
-		UserInfoURL: authUserInfoURL,
 		PEMCertificate: auth.PEMCertificate{
 			Private: authPrivateKey,
 			Public:  authPublicKey,
@@ -380,7 +365,7 @@ func newAuthConf(
 
 func newAuthService(
 	conf auth.Conf,
-	fetcher httpfetch.Fetcher,
+	repository *auth.Repository,
 ) *auth.Service {
 	userInfoCache := cache.New[string, *auth.UserInfo](
 		cache.WithTTL[string, *auth.UserInfo](10*time.Minute),
@@ -389,7 +374,7 @@ func newAuthService(
 
 	return auth.NewService(
 		conf,
+		repository,
 		auth.ServiceWithUserInfoCache(userInfoCache),
-		auth.ServiceWithFetcher(fetcher),
 	)
 }

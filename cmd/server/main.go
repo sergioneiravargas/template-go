@@ -15,7 +15,6 @@ import (
 	"github.com/sergioneiravargas/template-go/internal/platform/amqpx"
 	"github.com/sergioneiravargas/template-go/internal/platform/cache"
 	"github.com/sergioneiravargas/template-go/internal/platform/debug"
-	"github.com/sergioneiravargas/template-go/internal/platform/httpfetch"
 	"github.com/sergioneiravargas/template-go/internal/platform/log"
 	"github.com/sergioneiravargas/template-go/internal/platform/queue"
 	"github.com/sergioneiravargas/template-go/internal/platform/sql"
@@ -24,6 +23,7 @@ import (
 	"github.com/go-chi/chi/middleware"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
+	"github.com/go-chi/httprate"
 	"go.uber.org/fx"
 )
 
@@ -32,13 +32,13 @@ func main() {
 		fx.Provide(
 			newAppConf,
 			newLogger,
-			newHTTPFetcher,
 			newSQLConf,
 			newSQLDB,
 			newAMQPConn,
 			newQueuePool,
 			newWebsocketHub,
 			newAuthConf,
+			auth.NewRepository,
 			newAuthService,
 			example.NewRepository,
 			newExampleService,
@@ -162,7 +162,15 @@ func newHTTPHandler(
 
 		// Routes
 		r.Route("/api/v1", func(r chi.Router) {
-			// Public routes: none yet.
+			// Public routes
+			r.Group(func(r chi.Router) {
+				r.Use(httprate.LimitByIP(10, time.Minute))
+
+				r.Post("/auth/register", auth.RegisterAPIHandler(logger, authService))
+				r.Post("/auth/login", auth.LoginAPIHandler(logger, authService))
+				r.Post("/auth/refresh", auth.RefreshAPIHandler(logger, authService))
+				r.Post("/auth/logout", auth.LogoutAPIHandler(logger, authService))
+			})
 
 			// Private routes
 			r.Group(func(r chi.Router) {
@@ -179,6 +187,7 @@ func newHTTPHandler(
 	// Web routes
 	r.Group(func(r chi.Router) {
 		// Routes
+		r.Get("/auth-client", auth.WebClientHandler())
 		r.Get("/hello-world", func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("Hello, World!"))
 		})
@@ -282,19 +291,7 @@ func newLogger(
 	)
 }
 
-func newHTTPFetcher(logger *log.Logger) httpfetch.Fetcher {
-	return httpfetch.NewClient(logger)
-}
-
-func newAuthConf(
-	fetcher httpfetch.Fetcher,
-) auth.Conf {
-	authKeySet, err := auth.FetchKeySet(context.Background(), fetcher, os.Getenv("AUTH_KEYSET_URL"))
-	if err != nil {
-		panic(err)
-	}
-	authUserInfoURL := os.Getenv("AUTH_USERINFO_URL")
-
+func newAuthConf() auth.Conf {
 	authPrivateKeyBytes, err := os.ReadFile(os.Getenv("AUTH_PRIVATE_KEY_FILE"))
 	if err != nil {
 		panic(err)
@@ -314,8 +311,6 @@ func newAuthConf(
 	}
 
 	return auth.Conf{
-		KeySet:      authKeySet,
-		UserInfoURL: authUserInfoURL,
 		PEMCertificate: auth.PEMCertificate{
 			Private: authPrivateKey,
 			Public:  authPublicKey,
@@ -325,7 +320,7 @@ func newAuthConf(
 
 func newAuthService(
 	conf auth.Conf,
-	fetcher httpfetch.Fetcher,
+	repository *auth.Repository,
 ) *auth.Service {
 	userInfoCache := cache.New[string, *auth.UserInfo](
 		cache.WithTTL[string, *auth.UserInfo](10*time.Minute),
@@ -334,7 +329,7 @@ func newAuthService(
 
 	return auth.NewService(
 		conf,
+		repository,
 		auth.ServiceWithUserInfoCache(userInfoCache),
-		auth.ServiceWithFetcher(fetcher),
 	)
 }

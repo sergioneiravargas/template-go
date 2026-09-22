@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Auth client</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 60rem; }
+    label { display: block; margin-top: .75rem; font-size: .9rem; }
+    input { width: 100%; box-sizing: border-box; padding: .4rem; }
+    button { margin: .5rem .25rem 0 0; padding: .4rem .8rem; }
+    pre { background: #111; color: #eee; padding: 1rem; height: 20rem; overflow: auto; font-size: .8rem; }
+  </style>
+</head>
+<body>
+  <h1>Auth client</h1>
+  <p>Drives the <code>/api/v1/auth/*</code> endpoints on this host. After login, copy the
+  access token into the websocket client page (<code>/ws-client</code> on the socket-server host).</p>
+
+  <label>Email <input id="email" placeholder="ada@example.com"></label>
+  <label>Password <input id="password" type="password" placeholder="at least 8 characters"></label>
+  <label>Given name <input id="given_name" placeholder="Ada"></label>
+  <label>Family name <input id="family_name" placeholder="Lovelace"></label>
+  <div>
+    <button id="register">Register</button>
+    <button id="login">Login</button>
+  </div>
+
+  <label>Access token <input id="access_token" readonly placeholder="filled by login / refresh"></label>
+  <label>Refresh token <input id="refresh_token" readonly placeholder="filled by login / refresh"></label>
+  <div>
+    <button id="refresh" disabled>Refresh</button>
+    <button id="logout" disabled>Logout</button>
+    <button id="clear">Clear log</button>
+  </div>
+
+  <pre id="log"></pre>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const log = (prefix, text) => {
+      $('log').textContent += `[${new Date().toISOString()}] ${prefix} ${text}\n`;
+      $('log').scrollTop = $('log').scrollHeight;
+    };
+    const setTokens = (pair) => {
+      $('access_token').value = pair ? pair.access_token : '';
+      $('refresh_token').value = pair ? pair.refresh_token : '';
+      for (const id of ['refresh', 'logout']) $(id).disabled = !pair;
+    };
+    const call = async (path, body) => {
+      log('>>', `POST ${path}`);
+      try {
+        const response = await fetch(`/api/v1/auth/${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const text = await response.text();
+        log('<<', `${response.status} ${text.trim() || '-'}`);
+        if (!response.ok) return null;
+        return text ? JSON.parse(text) : {};
+      } catch (err) {
+        log('--', `error ${err}`);
+        return null;
+      }
+    };
+
+    $('register').onclick = () => call('register', {
+      email: $('email').value.trim(),
+      password: $('password').value,
+      given_name: $('given_name').value.trim(),
+      family_name: $('family_name').value.trim(),
+    });
+    $('login').onclick = async () => {
+      const pair = await call('login', { email: $('email').value.trim(), password: $('password').value });
+      if (pair) setTokens(pair);
+    };
+    $('refresh').onclick = async () => {
+      const pair = await call('refresh', { refresh_token: $('refresh_token').value });
+      setTokens(pair);
+    };
+    $('logout').onclick = async () => {
+      await call('logout', { refresh_token: $('refresh_token').value });
+      setTokens(null);
+    };
+    $('clear').onclick = () => { $('log').textContent = ''; };
+  </script>
+</body>
+</html>

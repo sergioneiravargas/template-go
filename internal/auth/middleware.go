@@ -67,7 +67,11 @@ func Middleware(
 				// Add the user information to the request's context
 				userInfo, err := service.UserInfo(ctx, token)
 				if err != nil {
-					http.Error(w, "Internal server error", http.StatusInternalServerError)
+					if errors.Is(err, ErrUserNotFound) {
+						http.Error(w, "Unknown user", http.StatusUnauthorized)
+					} else {
+						http.Error(w, "Internal server error", http.StatusInternalServerError)
+					}
 					return
 				}
 				r = RequestWithUserInfo(r, *userInfo)

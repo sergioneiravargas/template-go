@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -94,6 +95,12 @@ const (
 	OperatorIsNotNull          Operator = "IS NOT NULL"
 	OperatorIsNull             Operator = "IS NULL"
 )
+
+// Reports whether err is a PostgreSQL unique constraint violation
+func IsUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
 
 // WithTx runs fn inside a transaction. It commits when fn returns nil and
 // rolls back otherwise. A rollback failure (other than ErrTxDone) is

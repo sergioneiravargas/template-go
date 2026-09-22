@@ -4,36 +4,26 @@ import (
 	"context"
 	"crypto/rsa"
 	"errors"
+	"fmt"
+	"sync"
+	"time"
 
-	"github.com/sergioneiravargas/template-go/internal/platform/httpfetch"
+	"github.com/google/uuid"
 )
 
-var ErrFetcherNotConfigured = errors.New("fetcher not configured")
-
-type UserInfoCache interface {
-	Get(key string) (value *UserInfo, found bool)
-	Set(key string, value *UserInfo)
-	Unset(key string)
-}
+var (
+	ErrUserNotFound        = errors.New("user not found")
+	ErrInvalidCredentials  = errors.New("invalid credentials")
+	ErrEmailAlreadyExists  = errors.New("email already exists")
+	ErrInvalidRefreshToken = errors.New("invalid refresh token")
+	ErrRefreshTokenRotated = errors.New("refresh token already rotated")
+)
 
 // Service for auth operations
 type Service struct {
 	conf          Conf
+	repository    UserRepository
 	userInfoCache UserInfoCache
-	fetcher       httpfetch.Fetcher
-}
-
-// RSA key pair used to sign and verify locally issued tokens
-type PEMCertificate struct {
-	Private *rsa.PrivateKey
-	Public  *rsa.PublicKey
-}
-
-// Auth service configuration
-type Conf struct {
-	KeySet         KeySet
-	UserInfoURL    string
-	PEMCertificate PEMCertificate
 }
 
 // Service option
@@ -46,20 +36,19 @@ func ServiceWithUserInfoCache(cache UserInfoCache) ServiceOption {
 	}
 }
 
-// Service option to set the HTTP fetcher used to call the OIDC userinfo endpoint
-func ServiceWithFetcher(fetcher httpfetch.Fetcher) ServiceOption {
-	return func(s *Service) {
-		s.fetcher = fetcher
-	}
-}
-
 // Creates a new auth service
 func NewService(
 	conf Conf,
+	repository UserRepository,
 	opts ...ServiceOption,
 ) *Service {
+	if repository == nil {
+		panic("repository is required")
+	}
+
 	service := Service{
-		conf: conf,
+		conf:       conf,
+		repository: repository,
 	}
 
 	for _, opt := range opts {
@@ -69,13 +58,254 @@ func NewService(
 	return &service
 }
 
-// Validates the given token
-func (s *Service) ValidateToken(token string) error {
-	if err := ValidateTokenWithPEM(token, s.conf.PEMCertificate.Public); err == nil {
+var dummyPasswordHash = sync.OnceValue(func() string {
+	hash, err := HashPassword("dummy-password-for-timing")
+	if err != nil {
+		panic(err)
+	}
+	return hash
+})
+
+// Creates a new user account with an argon2id-hashed password
+func (s *Service) Register(ctx context.Context, input RegisterInput) (*User, error) {
+	if err := input.Validate(); err != nil {
+		return nil, err
+	}
+
+	hash, err := HashPassword(input.Password)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	now := time.Now()
+	user := &User{
+		ID:           uuid.NewString(),
+		Email:        input.Email,
+		PasswordHash: hash,
+		GivenName:    input.GivenName,
+		FamilyName:   input.FamilyName,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+
+	if err := s.repository.CreateUser(ctx, user); err != nil {
+		return nil, err
+	}
+
+	return user, nil
+}
+
+// Verifies the credentials and issues a new token pair
+func (s *Service) Login(ctx context.Context, input LoginInput) (*TokenPair, error) {
+	if err := input.Validate(); err != nil {
+		return nil, err
+	}
+
+	user, err := s.repository.GetUserByEmail(ctx, input.Email)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		// Burn the same hashing cost as a real comparison so response timing
+		// does not reveal whether the account exists
+		VerifyPassword(dummyPasswordHash(), input.Password)
+		return nil, ErrInvalidCredentials
+	}
+
+	match, err := VerifyPassword(user.PasswordHash, input.Password)
+	if err != nil {
+		return nil, fmt.Errorf("failed to verify password: %w", err)
+	}
+	if !match {
+		return nil, ErrInvalidCredentials
+	}
+
+	return s.issueTokenPair(ctx, user.ID, uuid.NewString())
+}
+
+// Rotates the given refresh token and issues a new token pair. Reuse of a
+// token that was already rotated or revoked kills its whole family.
+func (s *Service) Refresh(ctx context.Context, input RefreshInput) (*TokenPair, error) {
+	if err := input.Validate(); err != nil {
+		return nil, err
+	}
+
+	refreshToken, err := s.repository.GetRefreshTokenByHash(ctx, HashRefreshToken(input.RefreshToken))
+	if err != nil {
+		return nil, err
+	}
+	if refreshToken == nil {
+		return nil, ErrInvalidRefreshToken
+	}
+
+	now := time.Now()
+	if refreshToken.RevokedAt != nil || refreshToken.ReplacedBy != nil {
+		if err := s.repository.RevokeRefreshTokenFamily(ctx, refreshToken.FamilyID); err != nil {
+			return nil, err
+		}
+		return nil, ErrInvalidRefreshToken
+	}
+	if refreshToken.ExpiresAt.Before(now) {
+		return nil, ErrInvalidRefreshToken
+	}
+
+	user, err := s.repository.GetUser(ctx, refreshToken.UserID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, ErrInvalidRefreshToken
+	}
+
+	refreshTokenString, tokenHash, err := GenerateRefreshToken()
+	if err != nil {
+		return nil, err
+	}
+	next := &RefreshToken{
+		ID:        uuid.NewString(),
+		UserID:    refreshToken.UserID,
+		TokenHash: tokenHash,
+		FamilyID:  refreshToken.FamilyID,
+		ExpiresAt: now.Add(RefreshTokenTTL),
+		CreatedAt: now,
+	}
+	if err := s.repository.RotateRefreshToken(ctx, refreshToken.ID, next); err != nil {
+		if errors.Is(err, ErrRefreshTokenRotated) {
+			if revokeErr := s.repository.RevokeRefreshTokenFamily(ctx, refreshToken.FamilyID); revokeErr != nil {
+				return nil, revokeErr
+			}
+			return nil, ErrInvalidRefreshToken
+		}
+		return nil, err
+	}
+
+	accessToken, err := s.generateAccessToken(refreshToken.UserID, now)
+	if err != nil {
+		return nil, err
+	}
+
+	return &TokenPair{
+		AccessToken:  accessToken,
+		RefreshToken: refreshTokenString,
+		ExpiresIn:    int64(AccessTokenTTL.Seconds()),
+	}, nil
+}
+
+// Revokes the refresh token's family; unknown tokens are a no-op
+func (s *Service) Logout(ctx context.Context, input LogoutInput) error {
+	if err := input.Validate(); err != nil {
+		return err
+	}
+
+	refreshToken, err := s.repository.GetRefreshTokenByHash(ctx, HashRefreshToken(input.RefreshToken))
+	if err != nil {
+		return err
+	}
+	if refreshToken == nil {
 		return nil
 	}
 
-	return ValidateTokenWithJWKS(token, s.conf.KeySet)
+	return s.repository.RevokeRefreshTokenFamily(ctx, refreshToken.FamilyID)
+}
+
+func (s *Service) issueTokenPair(ctx context.Context, userID, familyID string) (*TokenPair, error) {
+	refreshTokenString, tokenHash, err := GenerateRefreshToken()
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	refreshToken := &RefreshToken{
+		ID:        uuid.NewString(),
+		UserID:    userID,
+		TokenHash: tokenHash,
+		FamilyID:  familyID,
+		ExpiresAt: now.Add(RefreshTokenTTL),
+		CreatedAt: now,
+	}
+	if err := s.repository.CreateRefreshToken(ctx, refreshToken); err != nil {
+		return nil, err
+	}
+
+	accessToken, err := s.generateAccessToken(userID, now)
+	if err != nil {
+		return nil, err
+	}
+
+	return &TokenPair{
+		AccessToken:  accessToken,
+		RefreshToken: refreshTokenString,
+		ExpiresIn:    int64(AccessTokenTTL.Seconds()),
+	}, nil
+}
+
+func (s *Service) generateAccessToken(userID string, now time.Time) (string, error) {
+	return GenerateToken(MapClaims{
+		"sub": userID,
+		"iat": now.Unix(),
+		"exp": now.Add(AccessTokenTTL).Unix(),
+	}, s.conf.PEMCertificate.Private)
+}
+
+// Validates the given token against the local PEM public key
+func (s *Service) ValidateToken(token string) error {
+	return ValidateTokenWithPEM(token, s.conf.PEMCertificate.Public)
+}
+
+// Retrieves the claims from the given token
+func (s *Service) TokenClaims(token string) (MapClaims, error) {
+	return TokenClaimsFromPEM(token, s.conf.PEMCertificate.Public)
+}
+
+// Retrieves the user information for the given access token: claims sub,
+// then the cache, then the user repository
+func (s *Service) UserInfo(
+	ctx context.Context,
+	token string,
+) (*UserInfo, error) {
+	claims, err := s.TokenClaims(token)
+	if err != nil {
+		return nil, err
+	}
+
+	userID, valid := claims["sub"].(string)
+	if !valid {
+		return nil, ErrInvalidTokenClaims
+	}
+	if _, err := uuid.Parse(userID); err != nil {
+		return nil, ErrUserNotFound
+	}
+
+	if s.userInfoCache != nil {
+		if userInfo, found := s.userInfoCache.Get(userID); found {
+			return userInfo, nil
+		}
+	}
+
+	user, err := s.repository.GetUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, ErrUserNotFound
+	}
+
+	userInfo := &UserInfo{
+		ID:            user.ID,
+		GivenName:     user.GivenName,
+		FamilyName:    user.FamilyName,
+		Email:         user.Email,
+		EmailVerified: user.EmailVerified,
+	}
+	if s.userInfoCache != nil {
+		s.userInfoCache.Set(userID, userInfo)
+	}
+
+	return userInfo, nil
+}
+
+func (s *Service) GenerateToken(claims MapClaims) (string, error) {
+	return GenerateToken(claims, s.conf.PEMCertificate.Private)
 }
 
 func ValidateTokenWithPEM(token string, key *rsa.PublicKey) error {
@@ -89,29 +319,6 @@ func ValidateTokenWithPEM(token string, key *rsa.PublicKey) error {
 	}
 
 	return nil
-}
-
-func ValidateTokenWithJWKS(token string, keySet KeySet) error {
-	parsedToken, err := ParseTokenWithJWKS(token, keySet)
-	if err != nil {
-		return err
-	}
-
-	if !parsedToken.Valid {
-		return ErrInvalidToken
-	}
-
-	return nil
-}
-
-// Retrieves the claims from the given token
-func (s *Service) TokenClaims(token string) (MapClaims, error) {
-	claims, err := TokenClaimsFromPEM(token, s.conf.PEMCertificate.Public)
-	if err == nil {
-		return claims, nil
-	}
-
-	return TokenClaimsFromJWKS(token, s.conf.KeySet)
 }
 
 func TokenClaimsFromPEM(token string, key *rsa.PublicKey) (MapClaims, error) {
@@ -130,77 +337,4 @@ func TokenClaimsFromPEM(token string, key *rsa.PublicKey) (MapClaims, error) {
 	}
 
 	return claims, nil
-}
-
-func TokenClaimsFromJWKS(token string, keySet KeySet) (MapClaims, error) {
-	parsedToken, err := ParseTokenWithJWKS(token, keySet)
-	if err != nil {
-		return nil, err
-	}
-
-	if !parsedToken.Valid {
-		return nil, ErrInvalidToken
-	}
-
-	claims, valid := parsedToken.Claims.(MapClaims)
-	if !valid {
-		return nil, ErrInvalidTokenClaims
-	}
-
-	return claims, nil
-}
-
-// Retrieves the user information from the given access token: token claims
-// first, then the cache, then the OIDC userinfo endpoint as a last resort.
-func (s *Service) UserInfo(
-	ctx context.Context,
-	token string,
-) (*UserInfo, error) {
-	claims, err := s.TokenClaims(token)
-	if err != nil {
-		return nil, err
-	}
-
-	userID, valid := claims["sub"].(string)
-	if !valid {
-		return nil, ErrInvalidTokenClaims
-	}
-
-	if s.userInfoCache != nil {
-		// Check if the user information is in cache and return it if found
-		userInfo, found := s.userInfoCache.Get(userID)
-		if found {
-			return userInfo, nil
-		}
-	}
-
-	userInfo, err := UserInfoFromClaims(claims)
-	if err == nil && userInfo != nil {
-		if s.userInfoCache != nil {
-			// Add the user information to cache
-			s.userInfoCache.Set(userID, userInfo)
-		}
-
-		return userInfo, nil
-	}
-
-	// Fetch the user information from the userinfo endpoint
-	if s.fetcher == nil {
-		return nil, ErrFetcherNotConfigured
-	}
-	userInfo, err = FetchUserInfo(ctx, s.fetcher, s.conf.UserInfoURL, token)
-	if err != nil {
-		return nil, err
-	}
-
-	if s.userInfoCache != nil {
-		// Add the user information to cache
-		s.userInfoCache.Set(userID, userInfo)
-	}
-
-	return userInfo, nil
-}
-
-func (s *Service) GenerateToken(claims MapClaims) (string, error) {
-	return GenerateToken(claims, s.conf.PEMCertificate.Private)
 }

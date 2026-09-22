@@ -10,7 +10,7 @@ live in the entry points, on purpose (packages under `internal/` stay wiring-fre
 
 | Dir | Purpose | Serves | Lifecycle specifics |
 |---|---|---|---|
-| `server` | REST API | chi router on `:3000`; routes under `/api/v1` in public + auth-middleware groups; `/hello-world` web route | starts HTTP server; graceful stop: server -> hub -> queue pool -> AMQP -> DB |
+| `server` | REST API | chi router on `:3000`; routes under `/api/v1` in public + auth-middleware groups; `/auth-client` demo page and `/hello-world` web routes | starts HTTP server; graceful stop: server -> hub -> queue pool -> AMQP -> DB |
 | `socket-server` | Websockets | `/ws/rooms/{room}` on `:3000` (host `3100`) behind `auth.Middleware`; `/ws-client` demo page (no auth) | two hooks: `configureServerLifecycleHooks` (HTTP server; stop: server -> pool -> AMQP -> DB) and `configureBroadcastLifecycleHooks` (`hub.ConsumeMessages` with concurrency 4 -> `hub.BroadcastMessage` per message as it arrives, resubscribe with 1s backoff when the subscription is lost; stop: cancel, wait, `hub.Close()`) - the hub is closed exactly once, in the broadcast hook, which runs first because fx stops hooks in reverse registration order |
 | `worker` | Async jobs | nothing (no HTTP) | `go pool.Work(workCtx)` (outbox listener + consumers, push queue workers); stop: `pool.Shutdown(ctx)` drains handlers, then `cancelWork()` stops the outbox consumers, then hub -> AMQP -> DB |
 
@@ -22,7 +22,7 @@ All three binaries start the pprof server on `:6060` when `APP_PROFILER_ENABLED=
 func main() {
     app := fx.New(
         fx.Provide(
-            newAppConf, newLogger, newHTTPFetcher,           // app-level
+            newAppConf, newLogger,                           // app-level
             newSQLConf, newSQLDB, newAMQPConn, newQueuePool, // infra
             newWebsocketHub,                                 // hub: producer everywhere, consumer in socket-server
             newAuthConf, newAuthService,                     // per-slice: Conf -> service
@@ -58,7 +58,7 @@ Conventions (all enforced by existing code - follow them exactly):
   `pool.Shutdown(ctx)`, and every wait on a background goroutine selects on `ctx.Done()`.
   Long-lived goroutines started in `OnStart` (broadcast loop, pool work) own a
   cancellable context created in the hook's closure plus a `done` channel that `OnStop`
-  waits on. `context.Background()` appears only there and in `newAuthConf`.
+  waits on. `context.Background()` appears only there.
 
 ## The #1 pitfall: triple wiring
 

@@ -3,10 +3,11 @@
 #
 # Usage:
 #   ./scripts/mint-token.sh [private.pem] [sub] [ttl-seconds]
-#   export TOKEN=$(./scripts/mint-token.sh)
+#   export TOKEN=$(./scripts/mint-token.sh private.pem <user-uuid>)
 #
-# The token is accepted by auth.Middleware because the service validates against
-# the local PEM public key before falling back to the remote JWKS.
+# The token's signature is accepted by auth.Middleware (local PEM public key),
+# but the sub must be the id of an existing auth_user row - register a user via
+# POST /api/v1/auth/register first and pass its id as sub.
 
 set -euo pipefail
 

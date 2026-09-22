@@ -16,8 +16,9 @@ Type aliases over `database/sql` (`DB`, `Tx`, `Row`, `Rows`, `NullString`, `Null
 `Conf`/`NewDB` (connection string, `sslmode=disable`, optional max pool conns), the
 transaction helper `WithTx(ctx, db, fn)` (begins with `BeginTx(ctx, nil)`, commits when
 `fn` returns nil, rolls back otherwise), `Listen(ctx, db, channel, onNotify)` (dedicated
-`LISTEN` connection, discarded on return, used by the outbox consumers), and the generic
-list primitives
+`LISTEN` connection, discarded on return, used by the outbox consumers),
+`IsUniqueViolation(err)` (detects PostgreSQL unique-constraint violations so slices can
+map them to sentinels without importing pgx), and the generic list primitives
 `Filter{Column, Operator, Value}`, `Sorting{Column, Direction}` and operator/direction
 constants.
 **Rule:** slices import THIS, never `database/sql` or pgx directly. Repositories take

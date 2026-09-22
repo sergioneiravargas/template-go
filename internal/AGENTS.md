@@ -9,7 +9,7 @@ handler, and a websocket connection handler.
 
 | Package | Responsibility | Notable files |
 |---|---|---|
-| `auth` | JWT (RS256) validation against local PEM keys and a remote JWKS, user info from claims or the OIDC userinfo endpoint, HTTP middleware, request-context helpers | `middleware.go`, `service.go`, `token.go`, `user_info.go` |
+| `auth` | Email+password accounts (argon2id), RS256 JWT access tokens against local PEM keys, rotating refresh tokens with reuse detection, register/login/refresh/logout handlers, HTTP middleware, request-context helpers, embedded browser client | `model.go`, `interfaces.go`, `service.go`, `repository.go`, `handler.go`, `password.go`, `token.go`, `middleware.go`, `user_info.go`, `web_client.go` |
 | `example` | Reference slice: messages (REST + outbox), `message_created` queue handler, websocket rooms, embedded browser client | `model.go`, `interfaces.go`, `repository.go`, `service.go`, `handler.go`, `queue.go`, `websocket_handler.go`, `websocket_client.go` |
 
 ### Inter-package dependency rules
@@ -85,8 +85,7 @@ Rules:
 - IDs: `uuid.NewString()`. Timestamps: `time.Now()` set in the service.
 - Dependencies are interfaces declared in **this** slice's `interfaces.go`
   (`MessageRepository`, `EventPublisher`) so tests use hand-rolled mocks.
-- Optional dependencies use functional options (`auth.ServiceWithUserInfoCache`,
-  `auth.ServiceWithFetcher`).
+- Optional dependencies use functional options (`auth.ServiceWithUserInfoCache`).
 
 ## 5. Repository pattern
 

@@ -13,7 +13,8 @@ Directory-scoped guides exist and MUST be read before editing files under their 
 
 ## 1. What this project is
 
-A **starter template** for Go web services with OIDC/JWT authentication. It ships the
+A **starter template** for Go web services with internal email+password authentication
+(argon2id password hashes, RS256 JWT access tokens, rotating refresh tokens). It ships the
 wiring, lifecycle, messaging and websocket plumbing of a production service, plus one
 reference slice (`internal/example`) that exercises every path end to end:
 
@@ -30,7 +31,7 @@ binaries**, all wired with Uber Fx from `cmd/*/main.go`:
 
 | Binary | Role | Listens |
 |---|---|---|
-| `cmd/server` | REST API (`/api/v1/...`, chi router) | `:3000` (host `3000`) |
+| `cmd/server` | REST API (`/api/v1/...`, chi router; public `/api/v1/auth/*` endpoints) + `/auth-client` demo page | `:3000` (host `3000`) |
 | `cmd/socket-server` | Websocket endpoints (`/ws/...`) + AMQP broadcast fan-out + `/ws-client` demo page | `:3000` (host `3100`) |
 | `cmd/worker` | Queue consumers (outbox relay + AMQP message handlers) | no HTTP port |
 
@@ -84,7 +85,7 @@ Every interval below is fixed in code; none is configurable through env.
 | DB | `jackc/pgx/v5` through `database/sql` (`internal/platform/sql` aliases) | raw SQL, `$1..$n` placeholders |
 | Messaging | `rabbitmq/amqp091-go` wrapped by `internal/platform/amqpx` (self-healing) + `internal/platform/queue` | delayed exchange plugin required |
 | Websockets | `gorilla/websocket` wrapped by `internal/platform/websocket` | |
-| Auth | `golang-jwt/jwt/v5`, RS256, PEM keys on disk + external JWKS | no sessions, no cookies |
+| Auth | Internal email+password accounts in PostgreSQL: argon2id hashes (`golang.org/x/crypto/argon2`), RS256 JWT access tokens (`golang-jwt/jwt/v5`, PEM keys on disk), rotating refresh tokens, `go-chi/httprate` rate limit on the auth endpoints | no external IdP, no sessions, no cookies |
 | Outbound HTTP | `hashicorp/go-retryablehttp` wrapped by `internal/platform/httpfetch` | injected as `httpfetch.Fetcher` |
 | Logging | stdlib `log/slog` wrapped by `internal/platform/log` | JSON, `producer` + `context` keys |
 | IDs | `google/uuid` -> `uuid.NewString()` | |
@@ -174,25 +175,37 @@ Unit tests are pure (hand-rolled mocks, no DB/broker needed), so during iteratio
 | `APP_` | `NAME`, `ENV` (`prod`\|`dev` only), `PROFILER_ENABLED` | all binaries |
 | `SQL_` | `USER, PASSWORD, HOST, PORT, DATABASE, MAX_POOL_CONN` | `sql.Conf` |
 | `AMQP_` | `USER, PASSWORD, HOST, PORT` | `amqpx.Config` (also compose rabbitmq) |
-| `AUTH_` | `KEYSET_URL` (JWKS, fetched at boot), `USERINFO_URL`, `PRIVATE_KEY_FILE`, `PUBLIC_KEY_FILE` | `auth.Conf` |
+| `AUTH_` | `PRIVATE_KEY_FILE`, `PUBLIC_KEY_FILE` | `auth.Conf` |
 
 Secret **files** mounted into containers locally (gitignored): `private.pem`, `public.pem`.
 
 ## 8. Authentication model
 
-- `auth.Middleware` extracts a JWT from `Authorization: Bearer` or the `?access_token=`
-  query param (the latter exists for websocket handshakes), validates it against the
-  local PEM public key first and the JWKS second, then puts token, claims and `UserInfo`
-  in the request context.
+- Accounts live in `auth_user` (unique on `LOWER(email)`), created via the public
+  `POST /api/v1/auth/register` endpoint. Passwords are hashed with argon2id
+  (`m=64MiB, t=3, p=1`, PHC string format, parameters read back from the hash).
+- `POST /api/v1/auth/login` verifies the credentials (a dummy argon2id verification runs
+  for unknown emails so timing does not reveal account existence; both failure modes
+  return 401 via `ErrInvalidCredentials`) and returns a token pair: a 15-minute RS256
+  JWT access token (claims `sub`/`iat`/`exp`, signed with `private.pem`) plus an opaque
+  30-day refresh token stored as a SHA-256 hash in `auth_refresh_token`.
+- `POST /api/v1/auth/refresh` rotates the refresh token inside its `family_id` line
+  (old row revoked and linked via `replaced_by`, new row created, one transaction).
+  Presenting an already-rotated or revoked token revokes the **whole family** (reuse
+  detection). `POST /api/v1/auth/logout` revokes the family and is idempotent (204).
+  All four endpoints sit behind `httprate.LimitByIP(10, time.Minute)`.
+- `auth.Middleware` extracts the access JWT from `Authorization: Bearer` or the
+  `?access_token=` query param (the latter exists for websocket handshakes), validates
+  the signature against the local PEM public key (stateless, no DB hit), then resolves
+  `UserInfo` from `auth_user` by `sub` through the 10-minute cache - an unknown or
+  deleted user gets a 401 (`ErrUserNotFound`) within one cache TTL.
 - Handlers read identity with `auth.UserInfoFromRequest(r)` - **never re-parse tokens**.
-- `UserInfo` is built from the token claims; the OIDC userinfo endpoint
-  (`AUTH_USERINFO_URL`, via `httpfetch.Fetcher`) is a fallback only.
-- There are no roles in the template. Add them to `auth.UserInfo` and gate in handlers
-  AND services when you need them.
-- Local development: a token signed with `private.pem` is accepted, so test tokens can be
-  minted without an identity provider: `export TOKEN=$(./scripts/mint-token.sh)` (optional
-  args: key file, `sub`, TTL in seconds). `AUTH_KEYSET_URL` must still be a reachable JWKS
-  because `newAuthConf` fetches it at boot.
+- There are no roles in the template. Add them to `auth.User`/`auth.UserInfo` and gate
+  in handlers AND services when you need them.
+- Local development: register a user through the API or the `/auth-client` browser page
+  (served by the server binary without auth, like `/ws-client`), or mint a token for an
+  existing user with `./scripts/mint-token.sh private.pem <auth_user.id UUID>` (the
+  signature is accepted, but the `sub` must exist in `auth_user`).
 
 ## 9. Maintaining these docs (sync matrix)
 
@@ -219,8 +232,9 @@ and identifiers from the codebase, never invented examples.
   "fix" imports unless migrating all middleware usage at once.
 - **`APP_ENV` accepts only `prod` or `dev`** - anything else panics at startup (and the
   log level derives from it: prod=Info, dev=Debug).
-- **`newAuthConf` fetches the JWKS at boot** (`AUTH_KEYSET_URL`). If the identity provider
-  is unreachable the binary panics and the container restarts - intended fail-fast.
+- **argon2id verification costs about 64MB of memory per attempt** (by design). The
+  auth endpoints sit behind `httprate.LimitByIP(10, time.Minute)` partly for this
+  reason; keep that limit when adding auth routes.
 - **Websocket broadcast is single-replica.** The hub's AMQP broadcast queue is shared, so
   with more than one `socket-server` replica each event reaches only one of them. Use an
   exclusive per-instance queue before scaling the socket-server horizontally.
