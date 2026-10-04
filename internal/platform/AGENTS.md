@@ -114,6 +114,18 @@ Per-process only - do not treat as shared state across binaries.
 cross-slice validators here WITH table-driven tests; slice-specific rules stay in the
 slice's `Validate()` methods.
 
+### `mailer` — transactional email over AWS SES
+`Mailer` interface (`Send(ctx, Email)`) with `Email{To, Subject, TextBody, HTMLBody}`
+(HTMLBody optional) and the `SES` implementation over `aws-sdk-go-v2/service/sesv2`
+(`NewSES(ctx, Conf{AWSRegion, Sender})`). Credentials come from the AWS default chain
+(environment keys locally, instance role in AWS) and are resolved lazily on the first
+send; the sender address must be verified in SES. The SDK's default retry/timeout
+behavior applies to sends.
+**Rule:** slices depend on their own consumer-side mailer interface (see
+`auth.Mailer`), never on the SES client, so tests fake email. Request paths never
+send directly - queue the email through the outbox and let the worker's queue
+handler call `Send` (retries + DLQ come for free).
+
 ### `httpfetch` — outbound HTTP
 `Fetcher` interface (`Get`, `Do` returning `*Response`) with a retrying client
 (`hashicorp/go-retryablehttp`) behind `NewClient(logger)`.
