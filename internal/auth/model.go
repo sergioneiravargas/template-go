@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	AccessTokenTTL  = 15 * time.Minute
-	RefreshTokenTTL = 30 * 24 * time.Hour
+	AccessTokenTTL        = 15 * time.Minute
+	RefreshTokenTTL       = 30 * 24 * time.Hour
+	PasswordResetTokenTTL = 1 * time.Hour
 
 	passwordMinLen = 8
 	passwordMaxLen = 512
@@ -19,6 +20,12 @@ const (
 // Auth service configuration
 type Conf struct {
 	PEMCertificate PEMCertificate
+	// PasswordResetURL is the frontend page that consumes reset tokens; the
+	// emailed link is PasswordResetURL?token=<token>.
+	PasswordResetURL string
+	// PasswordHashMaxConcurrency caps concurrent Argon2id computations, each
+	// of which holds ~64MB; 0 means DefaultPasswordHashMaxConcurrency.
+	PasswordHashMaxConcurrency int
 }
 
 // RSA key pair used to sign and verify locally issued tokens
@@ -49,6 +56,16 @@ type RefreshToken struct {
 	CreatedAt  time.Time
 	RevokedAt  *time.Time
 	ReplacedBy *string
+}
+
+// Stored password reset token; only the hash of the opaque token is persisted
+type PasswordResetToken struct {
+	ID        string
+	UserID    string
+	TokenHash string
+	ExpiresAt time.Time
+	CreatedAt time.Time
+	UsedAt    *time.Time
 }
 
 // Token pair returned by login and refresh
@@ -111,6 +128,46 @@ type LogoutInput struct {
 func (i LogoutInput) Validate() error {
 	if i.RefreshToken == "" {
 		return errors.New("refresh token cannot be empty")
+	}
+
+	return nil
+}
+
+type ForgotPasswordInput struct {
+	Email string `json:"email"`
+}
+
+func (i ForgotPasswordInput) Validate() error {
+	return validation.ValidateEmail(i.Email)
+}
+
+type ResetPasswordInput struct {
+	Token    string `json:"token"`
+	Password string `json:"password"`
+}
+
+func (i ResetPasswordInput) Validate() error {
+	if i.Token == "" {
+		return errors.New("token cannot be empty")
+	}
+	if len(i.Password) < passwordMinLen || len(i.Password) > passwordMaxLen {
+		return errors.New("password must be between 8 and 512 characters")
+	}
+
+	return nil
+}
+
+type SendPasswordResetEmailInput struct {
+	UserID string
+	Token  string
+}
+
+func (i SendPasswordResetEmailInput) Validate() error {
+	if i.UserID == "" {
+		return errors.New("user id cannot be empty")
+	}
+	if i.Token == "" {
+		return errors.New("token cannot be empty")
 	}
 
 	return nil

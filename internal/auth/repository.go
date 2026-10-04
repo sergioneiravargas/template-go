@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/sergioneiravargas/template-go/internal/platform/queue"
 	"github.com/sergioneiravargas/template-go/internal/platform/sql"
 )
 
@@ -178,6 +179,119 @@ func (r *Repository) RotateRefreshToken(ctx context.Context, oldID string, next 
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create refresh token: %w", err)
+		}
+
+		return nil
+	})
+}
+
+// Persists the reset token and its outbox messages in one transaction so the
+// reset email is only queued when the token exists.
+func (r *Repository) CreatePasswordResetToken(ctx context.Context, token *PasswordResetToken, queueMessages ...*queue.Message) error {
+	return sql.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(
+			ctx,
+			"INSERT INTO auth_password_reset_token (id, user_id, token_hash, expires_at, created_at) VALUES ($1, $2, $3, $4, $5)",
+			token.ID,
+			token.UserID,
+			token.TokenHash,
+			token.ExpiresAt,
+			token.CreatedAt,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create password reset token: %w", err)
+		}
+
+		if len(queueMessages) > 0 {
+			if err := queue.CreateOutboxMessage(ctx, tx, QueueName, queueMessages...); err != nil {
+				return fmt.Errorf("failed to create outbox messages: %w", err)
+			}
+		}
+
+		return nil
+	})
+}
+
+func (r *Repository) GetPasswordResetTokenByHash(ctx context.Context, tokenHash string) (*PasswordResetToken, error) {
+	row := r.db.QueryRowContext(
+		ctx,
+		"SELECT id, user_id, token_hash, expires_at, created_at, used_at FROM auth_password_reset_token WHERE token_hash = $1",
+		tokenHash,
+	)
+
+	var token PasswordResetToken
+	var usedAt sql.NullTime
+	err := row.Scan(
+		&token.ID,
+		&token.UserID,
+		&token.TokenHash,
+		&token.ExpiresAt,
+		&token.CreatedAt,
+		&usedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan password reset token: %w", err)
+	}
+
+	if usedAt.Valid {
+		token.UsedAt = &usedAt.Time
+	}
+
+	return &token, nil
+}
+
+// Consumes the reset token and applies the new password in one transaction:
+// the token (plus any other outstanding token for the user) is marked used,
+// the password hash is replaced, and every refresh token family is revoked.
+// Returns ErrPasswordResetTokenUsed when the token was already consumed by a
+// concurrent request.
+func (r *Repository) ConsumePasswordResetToken(ctx context.Context, token *PasswordResetToken, passwordHash string) error {
+	return sql.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(
+			ctx,
+			"UPDATE auth_password_reset_token SET used_at = NOW() WHERE id = $1 AND used_at IS NULL",
+			token.ID,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to consume password reset token: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("failed to check password reset token consumption: %w", err)
+		}
+		if affected == 0 {
+			return ErrPasswordResetTokenUsed
+		}
+
+		_, err = tx.ExecContext(
+			ctx,
+			"UPDATE auth_password_reset_token SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL",
+			token.UserID,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to invalidate outstanding password reset tokens: %w", err)
+		}
+
+		_, err = tx.ExecContext(
+			ctx,
+			"UPDATE auth_user SET password_hash = $1, updated_at = NOW() WHERE id = $2",
+			passwordHash,
+			token.UserID,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to update user password: %w", err)
+		}
+
+		_, err = tx.ExecContext(
+			ctx,
+			"UPDATE auth_refresh_token SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL",
+			token.UserID,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to revoke refresh tokens: %w", err)
 		}
 
 		return nil

@@ -123,6 +123,61 @@ func RefreshAPIHandler(logger *log.Logger, service *Service) http.HandlerFunc {
 	}
 }
 
+// ForgotPasswordAPIHandler always answers 202 for valid input so the
+// response does not reveal whether an account exists; the reset email is
+// sent asynchronously by the worker.
+func ForgotPasswordAPIHandler(logger *log.Logger, service *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		var input ForgotPasswordInput
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			httpError(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		if err := input.Validate(); err != nil {
+			httpError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if err := service.ForgotPassword(ctx, input); err != nil {
+			logger.Error("Failed to process forgot password request", log.Context{"error": err.Error()})
+			httpError(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusAccepted)
+	}
+}
+
+func ResetPasswordAPIHandler(logger *log.Logger, service *Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+
+		var input ResetPasswordInput
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			httpError(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+		if err := input.Validate(); err != nil {
+			httpError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if err := service.ResetPassword(ctx, input); err != nil {
+			if errors.Is(err, ErrInvalidPasswordResetToken) {
+				httpError(w, "Invalid password reset token", http.StatusBadRequest)
+				return
+			}
+			logger.Error("Failed to reset password", log.Context{"error": err.Error()})
+			httpError(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 func LogoutAPIHandler(logger *log.Logger, service *Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()

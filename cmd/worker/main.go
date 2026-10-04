@@ -6,11 +6,15 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"time"
 
+	"github.com/sergioneiravargas/template-go/internal/auth"
 	"github.com/sergioneiravargas/template-go/internal/example"
 	"github.com/sergioneiravargas/template-go/internal/platform/amqpx"
+	"github.com/sergioneiravargas/template-go/internal/platform/cache"
 	"github.com/sergioneiravargas/template-go/internal/platform/debug"
 	"github.com/sergioneiravargas/template-go/internal/platform/log"
+	"github.com/sergioneiravargas/template-go/internal/platform/mailer"
 	"github.com/sergioneiravargas/template-go/internal/platform/queue"
 	"github.com/sergioneiravargas/template-go/internal/platform/sql"
 	"github.com/sergioneiravargas/template-go/internal/platform/websocket"
@@ -28,6 +32,11 @@ func main() {
 			newAMQPConn,
 			newQueuePool,
 			newWebsocketHub,
+			newMailerConf,
+			newMailer,
+			newAuthConf,
+			auth.NewRepository,
+			newAuthService,
 			example.NewRepository,
 			newExampleService,
 		),
@@ -168,24 +177,34 @@ func newQueuePool(
 		db,
 		logger,
 		[]*queue.Queue{
+			auth.NewQueue(workerCount, logger, conn),
 			example.NewQueue(workerCount, logger, conn),
 		},
 	)
 }
 
 // setupQueuePool attaches the message handlers after construction: handlers
-// need the service, and the service is built after the pool.
+// need the services, and the services are built after the pool.
 func setupQueuePool(
-	service *example.Service,
+	authService *auth.Service,
+	exampleService *example.Service,
 	pool *queue.Pool,
 	logger *log.Logger,
 ) {
+	authQueue := pool.FindQueue(auth.QueueName)
+	if authQueue == nil {
+		panic("auth queue not found in pool during setup")
+	}
+	queue.WithMessageHandlers(
+		auth.MessageHandlers(authService, logger)...,
+	)(authQueue)
+
 	exampleQueue := pool.FindQueue(example.QueueName)
 	if exampleQueue == nil {
 		panic("example queue not found in pool during setup")
 	}
 	queue.WithMessageHandlers(
-		example.MessageHandlers(service, logger)...,
+		example.MessageHandlers(exampleService, logger)...,
 	)(exampleQueue)
 }
 
@@ -212,4 +231,91 @@ func newLogger(
 		appConf.Name,
 		handler,
 	)
+}
+
+func newAuthConf() auth.Conf {
+	authPrivateKeyBytes, err := os.ReadFile(os.Getenv("AUTH_PRIVATE_KEY_FILE"))
+	if err != nil {
+		panic(err)
+	}
+	authPrivateKey, err := auth.LoadPrivateKeyFromPEM(authPrivateKeyBytes)
+	if err != nil {
+		panic(err)
+	}
+
+	authPublicKeyBytes, err := os.ReadFile(os.Getenv("AUTH_PUBLIC_KEY_FILE"))
+	if err != nil {
+		panic(err)
+	}
+	authPublicKey, err := auth.LoadPublicKeyFromPEM(authPublicKeyBytes)
+	if err != nil {
+		panic(err)
+	}
+
+	passwordResetURL := os.Getenv("AUTH_PASSWORD_RESET_URL")
+	if passwordResetURL == "" {
+		panic("missing auth password reset url")
+	}
+
+	maxPasswordHashConcurrency := 0
+	if value := os.Getenv("AUTH_PASSWORD_HASH_MAX_CONCURRENCY"); value != "" {
+		maxPasswordHashConcurrency, err = strconv.Atoi(value)
+		if err != nil {
+			panic(err)
+		}
+		if maxPasswordHashConcurrency < 1 {
+			panic("AUTH_PASSWORD_HASH_MAX_CONCURRENCY must be at least 1")
+		}
+	}
+
+	return auth.Conf{
+		PEMCertificate: auth.PEMCertificate{
+			Private: authPrivateKey,
+			Public:  authPublicKey,
+		},
+		PasswordResetURL:           passwordResetURL,
+		PasswordHashMaxConcurrency: maxPasswordHashConcurrency,
+	}
+}
+
+func newAuthService(
+	conf auth.Conf,
+	repository *auth.Repository,
+	m mailer.Mailer,
+) *auth.Service {
+	userInfoCache := cache.New[string, *auth.UserInfo](
+		cache.WithTTL[string, *auth.UserInfo](10*time.Minute),
+		cache.WithCleanupInterval[string, *auth.UserInfo](30*time.Second),
+	)
+
+	return auth.NewService(
+		conf,
+		repository,
+		m,
+		auth.ServiceWithUserInfoCache(userInfoCache),
+	)
+}
+
+func newMailerConf() mailer.Conf {
+	region := os.Getenv("MAILER_AWS_REGION")
+	if region == "" {
+		panic("missing mailer aws region")
+	}
+	sender := os.Getenv("MAILER_SENDER_ADDRESS")
+	if sender == "" {
+		panic("missing mailer sender address")
+	}
+
+	return mailer.Conf{
+		AWSRegion: region,
+		Sender:    sender,
+	}
+}
+
+func newMailer(conf mailer.Conf) mailer.Mailer {
+	m, err := mailer.NewSES(context.Background(), conf)
+	if err != nil {
+		panic(err)
+	}
+	return m
 }

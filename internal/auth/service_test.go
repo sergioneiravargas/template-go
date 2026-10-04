@@ -5,10 +5,14 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/sergioneiravargas/template-go/internal/platform/mailer"
+	"github.com/sergioneiravargas/template-go/internal/platform/queue"
 )
 
 const (
@@ -30,12 +34,21 @@ func newTestKey(t *testing.T) *rsa.PrivateKey {
 func newTestService(t *testing.T, repo UserRepository, opts ...ServiceOption) *Service {
 	t.Helper()
 
+	return newTestServiceWithMailer(t, repo, &fakeMailer{
+		SendFunc: func(ctx context.Context, email mailer.Email) error { return nil },
+	}, opts...)
+}
+
+func newTestServiceWithMailer(t *testing.T, repo UserRepository, m Mailer, opts ...ServiceOption) *Service {
+	t.Helper()
+
 	key := newTestKey(t)
 	conf := Conf{
-		PEMCertificate: PEMCertificate{Private: key, Public: &key.PublicKey},
+		PEMCertificate:   PEMCertificate{Private: key, Public: &key.PublicKey},
+		PasswordResetURL: "https://example.com/reset-password",
 	}
 
-	return NewService(conf, repo, opts...)
+	return NewService(conf, repo, m, opts...)
 }
 
 func signedToken(t *testing.T, service *Service, claims MapClaims) string {
@@ -549,4 +562,284 @@ func (c *fakeCache) Set(key string, value *UserInfo) {
 
 func (c *fakeCache) Unset(key string) {
 	delete(c.values, key)
+}
+
+func TestService_ForgotPassword(t *testing.T) {
+	t.Run("stores a token and queues the reset email", func(t *testing.T) {
+		user := newTestUser(t, "correct password 123")
+		var stored *PasswordResetToken
+		var messages []*queue.Message
+		repo := &fakeUserRepository{
+			GetUserByEmailFunc: func(ctx context.Context, email string) (*User, error) {
+				return user, nil
+			},
+			CreatePasswordResetTokenFunc: func(ctx context.Context, token *PasswordResetToken, queueMessages ...*queue.Message) error {
+				stored = token
+				messages = queueMessages
+				return nil
+			},
+		}
+		service := newTestService(t, repo)
+
+		err := service.ForgotPassword(context.Background(), ForgotPasswordInput{Email: "ada@example.com"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if stored == nil {
+			t.Fatal("expected a reset token to be stored")
+		}
+		if _, err := uuid.Parse(stored.ID); err != nil {
+			t.Fatalf("expected UUID id, got %q", stored.ID)
+		}
+		if stored.UserID != user.ID {
+			t.Fatalf("unexpected user id: %q", stored.UserID)
+		}
+		if !stored.ExpiresAt.After(stored.CreatedAt) {
+			t.Fatalf("expected expiry after creation: %+v", stored)
+		}
+		if len(messages) != 1 || messages[0].Name != MessageNamePasswordResetRequested {
+			t.Fatalf("expected one password reset queue message, got %+v", messages)
+		}
+		msgBody, ok := queue.DecodeMessage[MessagePasswordResetRequested](messages[0])
+		if !ok {
+			t.Fatal("failed to decode queue message")
+		}
+		if msgBody.UserID != user.ID {
+			t.Fatalf("unexpected message user id: %q", msgBody.UserID)
+		}
+		if HashPasswordResetToken(msgBody.Token) != stored.TokenHash {
+			t.Fatal("expected the queued token to match the stored hash")
+		}
+	})
+
+	t.Run("unknown email is a silent no-op", func(t *testing.T) {
+		created := false
+		repo := &fakeUserRepository{
+			GetUserByEmailFunc: func(ctx context.Context, email string) (*User, error) {
+				return nil, nil
+			},
+			CreatePasswordResetTokenFunc: func(ctx context.Context, token *PasswordResetToken, queueMessages ...*queue.Message) error {
+				created = true
+				return nil
+			},
+		}
+		service := newTestService(t, repo)
+
+		err := service.ForgotPassword(context.Background(), ForgotPasswordInput{Email: "ghost@example.com"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if created {
+			t.Fatal("expected no reset token for an unknown email")
+		}
+	})
+
+	t.Run("invalid input skips repository", func(t *testing.T) {
+		service := newTestService(t, &fakeUserRepository{})
+
+		if err := service.ForgotPassword(context.Background(), ForgotPasswordInput{Email: "not-an-email"}); err == nil {
+			t.Fatal("expected validation error")
+		}
+	})
+}
+
+func TestService_ResetPassword(t *testing.T) {
+	validRow := func() *PasswordResetToken {
+		return &PasswordResetToken{
+			ID:        testTokenID,
+			UserID:    testUserID,
+			TokenHash: HashPasswordResetToken("reset-token"),
+			ExpiresAt: time.Now().Add(30 * time.Minute),
+			CreatedAt: time.Now(),
+		}
+	}
+
+	t.Run("success", func(t *testing.T) {
+		row := validRow()
+		var consumed *PasswordResetToken
+		var newHash string
+		repo := &fakeUserRepository{
+			GetPasswordResetTokenByHashFunc: func(ctx context.Context, tokenHash string) (*PasswordResetToken, error) {
+				if tokenHash != row.TokenHash {
+					t.Fatalf("unexpected token hash lookup: %q", tokenHash)
+				}
+				return row, nil
+			},
+			ConsumePasswordResetTokenFunc: func(ctx context.Context, token *PasswordResetToken, passwordHash string) error {
+				consumed = token
+				newHash = passwordHash
+				return nil
+			},
+		}
+		service := newTestService(t, repo)
+
+		err := service.ResetPassword(context.Background(), ResetPasswordInput{
+			Token:    "reset-token",
+			Password: "brand new password",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if consumed != row {
+			t.Fatal("expected the fetched token to be consumed")
+		}
+		match, err := VerifyPassword(newHash, "brand new password")
+		if err != nil || !match {
+			t.Fatalf("expected new hash to verify, got match=%t err=%v", match, err)
+		}
+	})
+
+	t.Run("invalid tokens map to the sentinel", func(t *testing.T) {
+		used := time.Now()
+		tests := []struct {
+			name string
+			row  *PasswordResetToken
+		}{
+			{name: "unknown token", row: nil},
+			{name: "used token", row: func() *PasswordResetToken { r := validRow(); r.UsedAt = &used; return r }()},
+			{name: "expired token", row: func() *PasswordResetToken { r := validRow(); r.ExpiresAt = time.Now().Add(-time.Minute); return r }()},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				repo := &fakeUserRepository{
+					GetPasswordResetTokenByHashFunc: func(ctx context.Context, tokenHash string) (*PasswordResetToken, error) {
+						return tt.row, nil
+					},
+				}
+				service := newTestService(t, repo)
+
+				err := service.ResetPassword(context.Background(), ResetPasswordInput{
+					Token:    "reset-token",
+					Password: "brand new password",
+				})
+				if !errors.Is(err, ErrInvalidPasswordResetToken) {
+					t.Fatalf("expected ErrInvalidPasswordResetToken, got %v", err)
+				}
+			})
+		}
+	})
+
+	t.Run("concurrent consumption maps to the sentinel", func(t *testing.T) {
+		repo := &fakeUserRepository{
+			GetPasswordResetTokenByHashFunc: func(ctx context.Context, tokenHash string) (*PasswordResetToken, error) {
+				return validRow(), nil
+			},
+			ConsumePasswordResetTokenFunc: func(ctx context.Context, token *PasswordResetToken, passwordHash string) error {
+				return ErrPasswordResetTokenUsed
+			},
+		}
+		service := newTestService(t, repo)
+
+		err := service.ResetPassword(context.Background(), ResetPasswordInput{
+			Token:    "reset-token",
+			Password: "brand new password",
+		})
+		if !errors.Is(err, ErrInvalidPasswordResetToken) {
+			t.Fatalf("expected ErrInvalidPasswordResetToken, got %v", err)
+		}
+	})
+
+	t.Run("invalid input skips repository", func(t *testing.T) {
+		service := newTestService(t, &fakeUserRepository{})
+
+		if err := service.ResetPassword(context.Background(), ResetPasswordInput{
+			Token:    "reset-token",
+			Password: "short",
+		}); err == nil {
+			t.Fatal("expected validation error")
+		}
+	})
+}
+
+func TestService_SendPasswordResetEmail(t *testing.T) {
+	t.Run("sends the reset link to the user", func(t *testing.T) {
+		user := newTestUser(t, "correct password 123")
+		repo := &fakeUserRepository{
+			GetUserFunc: func(ctx context.Context, id string) (*User, error) {
+				if id != user.ID {
+					t.Fatalf("unexpected user lookup: %q", id)
+				}
+				return user, nil
+			},
+		}
+		var sent *mailer.Email
+		service := newTestServiceWithMailer(t, repo, &fakeMailer{
+			SendFunc: func(ctx context.Context, email mailer.Email) error {
+				sent = &email
+				return nil
+			},
+		})
+
+		err := service.SendPasswordResetEmail(context.Background(), SendPasswordResetEmailInput{
+			UserID: user.ID,
+			Token:  "reset-token",
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if sent == nil {
+			t.Fatal("expected an email to be sent")
+		}
+		if len(sent.To) != 1 || sent.To[0] != user.Email {
+			t.Fatalf("unexpected recipients: %v", sent.To)
+		}
+		link := "https://example.com/reset-password?token=reset-token"
+		if !strings.Contains(sent.TextBody, link) || !strings.Contains(sent.HTMLBody, link) {
+			t.Fatalf("expected both bodies to contain %q", link)
+		}
+		if !strings.Contains(sent.TextBody, user.GivenName) {
+			t.Fatal("expected the greeting to use the given name")
+		}
+	})
+
+	t.Run("unknown user maps to ErrUserNotFound", func(t *testing.T) {
+		repo := &fakeUserRepository{
+			GetUserFunc: func(ctx context.Context, id string) (*User, error) {
+				return nil, nil
+			},
+		}
+		service := newTestService(t, repo)
+
+		err := service.SendPasswordResetEmail(context.Background(), SendPasswordResetEmailInput{
+			UserID: testUserID,
+			Token:  "reset-token",
+		})
+		if !errors.Is(err, ErrUserNotFound) {
+			t.Fatalf("expected ErrUserNotFound, got %v", err)
+		}
+	})
+
+	t.Run("mailer errors are propagated", func(t *testing.T) {
+		user := newTestUser(t, "correct password 123")
+		repo := &fakeUserRepository{
+			GetUserFunc: func(ctx context.Context, id string) (*User, error) {
+				return user, nil
+			},
+		}
+		sendErr := errors.New("ses throttled")
+		service := newTestServiceWithMailer(t, repo, &fakeMailer{
+			SendFunc: func(ctx context.Context, email mailer.Email) error {
+				return sendErr
+			},
+		})
+
+		err := service.SendPasswordResetEmail(context.Background(), SendPasswordResetEmailInput{
+			UserID: user.ID,
+			Token:  "reset-token",
+		})
+		if !errors.Is(err, sendErr) {
+			t.Fatalf("expected the mailer error to be wrapped, got %v", err)
+		}
+	})
+
+	t.Run("invalid input skips repository", func(t *testing.T) {
+		service := newTestService(t, &fakeUserRepository{})
+
+		if err := service.SendPasswordResetEmail(context.Background(), SendPasswordResetEmailInput{
+			UserID: testUserID,
+		}); err == nil {
+			t.Fatal("expected validation error")
+		}
+	})
 }

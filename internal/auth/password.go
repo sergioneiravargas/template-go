@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -20,6 +21,42 @@ const (
 	argonSaltLen        = 16
 	argonKeyLen  uint32 = 32
 )
+
+// Default cap on concurrent Argon2id computations; each one holds argonMemory
+// (~64MB), so the cap bounds the worst-case memory burst of parallel logins
+const DefaultPasswordHashMaxConcurrency = 4
+
+func newPasswordSem(maxConcurrency int) chan struct{} {
+	if maxConcurrency == 0 {
+		maxConcurrency = DefaultPasswordHashMaxConcurrency
+	}
+	if maxConcurrency < 0 {
+		panic("password hash max concurrency must be positive")
+	}
+	return make(chan struct{}, maxConcurrency)
+}
+
+// Runs HashPassword while holding one of the service's password hashing slots
+func (s *Service) hashPassword(ctx context.Context, password string) (string, error) {
+	select {
+	case s.passwordSem <- struct{}{}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	defer func() { <-s.passwordSem }()
+	return HashPassword(password)
+}
+
+// Runs VerifyPassword while holding one of the service's password hashing slots
+func (s *Service) verifyPassword(ctx context.Context, hash, password string) (bool, error) {
+	select {
+	case s.passwordSem <- struct{}{}:
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
+	defer func() { <-s.passwordSem }()
+	return VerifyPassword(hash, password)
+}
 
 // Hashes the given password with argon2id in PHC string format
 func HashPassword(password string) (string, error) {

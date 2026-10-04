@@ -59,6 +59,16 @@ make check          # fmt + vet + build + test: the definition of done
   Login returns `access_token` (15 min JWT for `Authorization: Bearer`) and
   `refresh_token` (30 days, rotate it via `/api/v1/auth/refresh`, revoke it via
   `/api/v1/auth/logout`).
+- Password recovery (reset links go out via AWS SES, see the `MAILER_*` vars; the
+  emailed link's target is `AUTH_PASSWORD_RESET_URL?token=...`):
+  ```
+  curl -X POST http://localhost:3000/api/v1/auth/forgot-password \
+    -d '{"email":"ada@example.com"}'
+  curl -X POST http://localhost:3000/api/v1/auth/reset-password \
+    -d '{"token":"<token-from-the-email>","password":"brand new password"}'
+  ```
+  Forgot-password always answers 202 (unknown emails included); reset-password consumes
+  the single-use token (1 h TTL) and revokes every active session.
 - Alternatively mint an access token for an existing user directly:
   `export TOKEN=$(./scripts/mint-token.sh private.pem <user-uuid>)` - the `sub` must be
   a real `auth_user.id` or requests get a 401.

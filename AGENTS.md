@@ -48,7 +48,7 @@ Event flow between processes:
   domain change and raise a `NOTIFY` on commit; the **worker**'s pool wakes up, claims rows
   (`FOR UPDATE SKIP LOCKED`) and publishes them to RabbitMQ; each queue holds one push
   subscription (prefetch = concurrency, same model as the websocket broadcast consumer)
-  and queue handlers (`example.MessageHandlers`) process messages in parallel goroutines
+  and queue handlers (`auth.MessageHandlers`, `example.MessageHandlers`) process messages in parallel goroutines
   with retries (exponential backoff, max 5) and a dead-letter queue. Nothing
   polls while idle.
 - Services publish websocket events via `websocket.Hub.Publish` (AMQP broadcast exchange);
@@ -59,7 +59,8 @@ Event flow between processes:
 
 ### Timing reference
 
-Every interval below is fixed in code; none is configurable through env.
+Every interval below is fixed in code; the only env-tunable limit is the Argon2id
+concurrency cap (`AUTH_PASSWORD_HASH_MAX_CONCURRENCY`, default 4).
 
 | Component | Behavior | Value | Where |
 |---|---|---|---|
@@ -71,6 +72,7 @@ Every interval below is fixed in code; none is configurable through env.
 | message retries (queue and outbox) | exponential backoff, then dead-letter | 30 s, 60 s, 120 s, 240 s, 480 s | `queue.go` `calculateExponentialBackoff` |
 | AMQP connection | heartbeat / dial timeout / reconnect backoff / give-up window | 10 s / 30 s / 1 s to 30 s with jitter / 2 min then exit(1) | `amqpx.go` |
 | auth user-info cache | TTL / cleanup interval | 10 min / 30 s | `cmd/*/main.go` `newAuthService` |
+| password reset token | single-use TTL | 1 h | `internal/auth/model.go` `PasswordResetTokenTTL` |
 | outbound HTTP (`httpfetch`) | timeout / attempts / backoff | 10 s / 3 / 200 ms to 10 s | `httpfetch.go` |
 | fx start and stop | timeouts | 15 s each | fx defaults |
 | Docker stop grace | before SIGKILL | 10 s | compose default |
@@ -87,6 +89,7 @@ Every interval below is fixed in code; none is configurable through env.
 | Websockets | `gorilla/websocket` wrapped by `internal/platform/websocket` | |
 | Auth | Internal email+password accounts in PostgreSQL: argon2id hashes (`golang.org/x/crypto/argon2`), RS256 JWT access tokens (`golang-jwt/jwt/v5`, PEM keys on disk), rotating refresh tokens, `go-chi/httprate` rate limit on the auth endpoints | no external IdP, no sessions, no cookies |
 | Outbound HTTP | `hashicorp/go-retryablehttp` wrapped by `internal/platform/httpfetch` | injected as `httpfetch.Fetcher` |
+| Email | AWS SES (`aws-sdk-go-v2/service/sesv2`) wrapped by `internal/platform/mailer` | injected as `mailer.Mailer`; credentials via the AWS default chain |
 | Logging | stdlib `log/slog` wrapped by `internal/platform/log` | JSON, `producer` + `context` keys |
 | IDs | `google/uuid` -> `uuid.NewString()` | |
 
@@ -96,7 +99,7 @@ Every interval below is fixed in code; none is configurable through env.
 cmd/                  Entry points (fx wiring, env->Conf mapping, routes)  -> cmd/AGENTS.md
 internal/             Vertical slices: auth, example                        -> internal/AGENTS.md
 internal/platform/    Domain-agnostic infra: amqpx, cache, debug, httpfetch,
-                      log, queue, sql, validation, websocket               -> internal/platform/AGENTS.md
+                      log, mailer, queue, sql, validation, websocket        -> internal/platform/AGENTS.md
 migrations/           golang-migrate SQL pairs (NNNNNN_domain_desc)
 docker/               Dockerfiles (server, socket-server, worker, rabbitmq+plugin)
 scripts/              pprof-report.sh (profiling), check-gate.sh (validation gate),
@@ -175,7 +178,9 @@ Unit tests are pure (hand-rolled mocks, no DB/broker needed), so during iteratio
 | `APP_` | `NAME`, `ENV` (`prod`\|`dev` only), `PROFILER_ENABLED` | all binaries |
 | `SQL_` | `USER, PASSWORD, HOST, PORT, DATABASE, MAX_POOL_CONN` | `sql.Conf` |
 | `AMQP_` | `USER, PASSWORD, HOST, PORT` | `amqpx.Config` (also compose rabbitmq) |
-| `AUTH_` | `PRIVATE_KEY_FILE`, `PUBLIC_KEY_FILE` | `auth.Conf` |
+| `AUTH_` | `PRIVATE_KEY_FILE`, `PUBLIC_KEY_FILE`, `PASSWORD_RESET_URL`, `PASSWORD_HASH_MAX_CONCURRENCY` (optional, default 4) | `auth.Conf` |
+| `MAILER_` | `AWS_REGION`, `SENDER_ADDRESS` | `mailer.Conf` |
+| `AWS_` | `ACCESS_KEY_ID`, `SECRET_ACCESS_KEY` (optional) | AWS SDK default credentials chain; leave empty when an instance role provides them |
 
 Secret **files** mounted into containers locally (gitignored): `private.pem`, `public.pem`.
 
@@ -193,7 +198,16 @@ Secret **files** mounted into containers locally (gitignored): `private.pem`, `p
   (old row revoked and linked via `replaced_by`, new row created, one transaction).
   Presenting an already-rotated or revoked token revokes the **whole family** (reuse
   detection). `POST /api/v1/auth/logout` revokes the family and is idempotent (204).
-  All four endpoints sit behind `httprate.LimitByIP(10, time.Minute)`.
+  All public auth endpoints sit behind `httprate.LimitByIP(10, time.Minute)`.
+- Password recovery: `POST /api/v1/auth/forgot-password` always answers 202 for valid
+  input (no account-existence leak); for known emails it stores a single-use token
+  (SHA-256 hash in `auth_password_reset_token`, 1 h TTL) and queues a
+  `password_reset_requested` outbox message on `auth.users.queue`. The worker re-fetches
+  the user and sends the reset link (`AUTH_PASSWORD_RESET_URL?token=...`) through
+  `internal/platform/mailer` (AWS SES). The queue message carries the raw token because
+  only its hash is persisted. `POST /api/v1/auth/reset-password` consumes the token in
+  one transaction: password hash replaced, all outstanding reset tokens marked used, and
+  every refresh token family revoked (invalid, expired or used tokens get a 400).
 - `auth.Middleware` extracts the access JWT from `Authorization: Bearer` or the
   `?access_token=` query param (the latter exists for websocket handshakes), validates
   the signature against the local PEM public key (stateless, no DB hit), then resolves
@@ -232,9 +246,11 @@ and identifiers from the codebase, never invented examples.
   "fix" imports unless migrating all middleware usage at once.
 - **`APP_ENV` accepts only `prod` or `dev`** - anything else panics at startup (and the
   log level derives from it: prod=Info, dev=Debug).
-- **argon2id verification costs about 64MB of memory per attempt** (by design). The
-  auth endpoints sit behind `httprate.LimitByIP(10, time.Minute)` partly for this
-  reason; keep that limit when adding auth routes.
+- **argon2id verification costs about 64MB of memory per attempt** (by design).
+  `auth.Service` caps concurrent hash/verify operations with a semaphore
+  (`AUTH_PASSWORD_HASH_MAX_CONCURRENCY`, default 4), bounding the worst-case burst to
+  about N x 64MB, and the auth endpoints sit behind `httprate.LimitByIP(10, time.Minute)`
+  partly for this reason; keep that limit when adding auth routes.
 - **Websocket broadcast is single-replica.** The hub's AMQP broadcast queue is shared, so
   with more than one `socket-server` replica each event reaches only one of them. Use an
   exclusive per-instance queue before scaling the socket-server horizontally.

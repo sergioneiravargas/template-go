@@ -73,18 +73,36 @@ func LoadPublicKeyFromPEM(data []byte) (*rsa.PublicKey, error) {
 
 // Generates an opaque refresh token and the hash it is stored under
 func GenerateRefreshToken() (string, string, error) {
-	raw := make([]byte, 32)
-	if _, err := rand.Read(raw); err != nil {
-		return "", "", fmt.Errorf("failed to generate refresh token: %w", err)
-	}
-
-	token := base64.RawURLEncoding.EncodeToString(raw)
-
-	return token, HashRefreshToken(token), nil
+	return generateOpaqueToken()
 }
 
 // Hashes a refresh token for storage and lookup
 func HashRefreshToken(token string) string {
+	return hashOpaqueToken(token)
+}
+
+// Generates an opaque password reset token and the hash it is stored under
+func GeneratePasswordResetToken() (string, string, error) {
+	return generateOpaqueToken()
+}
+
+// Hashes a password reset token for storage and lookup
+func HashPasswordResetToken(token string) string {
+	return hashOpaqueToken(token)
+}
+
+func generateOpaqueToken() (string, string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", "", fmt.Errorf("failed to generate token: %w", err)
+	}
+
+	token := base64.RawURLEncoding.EncodeToString(raw)
+
+	return token, hashOpaqueToken(token), nil
+}
+
+func hashOpaqueToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
 }

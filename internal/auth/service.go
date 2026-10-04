@@ -5,25 +5,34 @@ import (
 	"crypto/rsa"
 	"errors"
 	"fmt"
+	"html"
+	"net/url"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/sergioneiravargas/template-go/internal/platform/mailer"
+	"github.com/sergioneiravargas/template-go/internal/platform/queue"
 )
 
 var (
-	ErrUserNotFound        = errors.New("user not found")
-	ErrInvalidCredentials  = errors.New("invalid credentials")
-	ErrEmailAlreadyExists  = errors.New("email already exists")
-	ErrInvalidRefreshToken = errors.New("invalid refresh token")
-	ErrRefreshTokenRotated = errors.New("refresh token already rotated")
+	ErrUserNotFound              = errors.New("user not found")
+	ErrInvalidCredentials        = errors.New("invalid credentials")
+	ErrEmailAlreadyExists        = errors.New("email already exists")
+	ErrInvalidRefreshToken       = errors.New("invalid refresh token")
+	ErrRefreshTokenRotated       = errors.New("refresh token already rotated")
+	ErrInvalidPasswordResetToken = errors.New("invalid password reset token")
+	ErrPasswordResetTokenUsed    = errors.New("password reset token already used")
 )
 
 // Service for auth operations
 type Service struct {
 	conf          Conf
 	repository    UserRepository
+	mailer        Mailer
 	userInfoCache UserInfoCache
+	passwordSem   chan struct{}
 }
 
 // Service option
@@ -40,15 +49,21 @@ func ServiceWithUserInfoCache(cache UserInfoCache) ServiceOption {
 func NewService(
 	conf Conf,
 	repository UserRepository,
+	mailer Mailer,
 	opts ...ServiceOption,
 ) *Service {
 	if repository == nil {
 		panic("repository is required")
 	}
+	if mailer == nil {
+		panic("mailer is required")
+	}
 
 	service := Service{
-		conf:       conf,
-		repository: repository,
+		conf:        conf,
+		repository:  repository,
+		mailer:      mailer,
+		passwordSem: newPasswordSem(conf.PasswordHashMaxConcurrency),
 	}
 
 	for _, opt := range opts {
@@ -72,7 +87,7 @@ func (s *Service) Register(ctx context.Context, input RegisterInput) (*User, err
 		return nil, err
 	}
 
-	hash, err := HashPassword(input.Password)
+	hash, err := s.hashPassword(ctx, input.Password)
 	if err != nil {
 		return nil, fmt.Errorf("failed to hash password: %w", err)
 	}
@@ -108,11 +123,11 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (*TokenPair, erro
 	if user == nil {
 		// Burn the same hashing cost as a real comparison so response timing
 		// does not reveal whether the account exists
-		VerifyPassword(dummyPasswordHash(), input.Password)
+		s.verifyPassword(ctx, dummyPasswordHash(), input.Password)
 		return nil, ErrInvalidCredentials
 	}
 
-	match, err := VerifyPassword(user.PasswordHash, input.Password)
+	match, err := s.verifyPassword(ctx, user.PasswordHash, input.Password)
 	if err != nil {
 		return nil, fmt.Errorf("failed to verify password: %w", err)
 	}
@@ -206,6 +221,123 @@ func (s *Service) Logout(ctx context.Context, input LogoutInput) error {
 	}
 
 	return s.repository.RevokeRefreshTokenFamily(ctx, refreshToken.FamilyID)
+}
+
+// Issues a password reset token and queues the reset email through the
+// outbox. Unknown emails return nil so the endpoint does not reveal whether
+// an account exists.
+func (s *Service) ForgotPassword(ctx context.Context, input ForgotPasswordInput) error {
+	if err := input.Validate(); err != nil {
+		return err
+	}
+
+	user, err := s.repository.GetUserByEmail(ctx, input.Email)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return nil
+	}
+
+	token, tokenHash, err := GeneratePasswordResetToken()
+	if err != nil {
+		return err
+	}
+
+	now := time.Now()
+	row := &PasswordResetToken{
+		ID:        uuid.NewString(),
+		UserID:    user.ID,
+		TokenHash: tokenHash,
+		ExpiresAt: now.Add(PasswordResetTokenTTL),
+		CreatedAt: now,
+	}
+
+	// The raw token rides in the queue message because only its hash is
+	// persisted; the worker cannot rebuild the email link from stored state.
+	message, err := queue.NewMessage(MessageNamePasswordResetRequested, MessagePasswordResetRequested{
+		UserID: user.ID,
+		Token:  token,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create queue message: %w", err)
+	}
+
+	return s.repository.CreatePasswordResetToken(ctx, row, message)
+}
+
+// Consumes the reset token, replaces the password and revokes every active
+// session of the user
+func (s *Service) ResetPassword(ctx context.Context, input ResetPasswordInput) error {
+	if err := input.Validate(); err != nil {
+		return err
+	}
+
+	row, err := s.repository.GetPasswordResetTokenByHash(ctx, HashPasswordResetToken(input.Token))
+	if err != nil {
+		return err
+	}
+	if row == nil || row.UsedAt != nil || row.ExpiresAt.Before(time.Now()) {
+		return ErrInvalidPasswordResetToken
+	}
+
+	hash, err := s.hashPassword(ctx, input.Password)
+	if err != nil {
+		return fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	if err := s.repository.ConsumePasswordResetToken(ctx, row, hash); err != nil {
+		if errors.Is(err, ErrPasswordResetTokenUsed) {
+			return ErrInvalidPasswordResetToken
+		}
+		return err
+	}
+
+	return nil
+}
+
+// Sends the password reset email for a queued request; called by the queue
+// handler in the worker
+func (s *Service) SendPasswordResetEmail(ctx context.Context, input SendPasswordResetEmailInput) error {
+	if err := input.Validate(); err != nil {
+		return err
+	}
+
+	user, err := s.repository.GetUser(ctx, input.UserID)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return ErrUserNotFound
+	}
+
+	link := fmt.Sprintf("%s?token=%s", s.conf.PasswordResetURL, url.QueryEscape(input.Token))
+	greeting := "Hello,"
+	if user.GivenName != "" {
+		greeting = fmt.Sprintf("Hello %s,", user.GivenName)
+	}
+
+	// The expiry wording must match PasswordResetTokenTTL.
+	email := mailer.Email{
+		To:      []string{user.Email},
+		Subject: "Reset your password",
+		TextBody: fmt.Sprintf(
+			"%s\n\nWe received a request to reset your password. Open the link below to choose a new one; it expires in 1 hour.\n\n%s\n\nIf you did not request this, you can ignore this email.",
+			greeting,
+			link,
+		),
+		HTMLBody: fmt.Sprintf(
+			"<p>%s</p><p>We received a request to reset your password. Open the link below to choose a new one; it expires in 1 hour.</p><p><a href=\"%s\">Reset your password</a></p><p>If you did not request this, you can ignore this email.</p>",
+			html.EscapeString(greeting),
+			link,
+		),
+	}
+
+	if err := s.mailer.Send(ctx, email); err != nil {
+		return fmt.Errorf("failed to send password reset email: %w", err)
+	}
+
+	return nil
 }
 
 func (s *Service) issueTokenPair(ctx context.Context, userID, familyID string) (*TokenPair, error) {
